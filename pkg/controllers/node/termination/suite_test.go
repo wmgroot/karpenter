@@ -72,7 +72,7 @@ var _ = BeforeSuite(func() {
 	cloudProvider = fake.NewCloudProvider()
 	recorder = test.NewEventRecorder()
 	queue = terminator.NewQueue(env.Client, recorder)
-	terminationController = termination.NewController(env.Client, cloudProvider, terminator.NewTerminator(fakeClock, env.Client, queue), recorder)
+	terminationController = termination.NewController(env.Client, cloudProvider, terminator.NewTerminator(fakeClock, env.Client, queue, recorder), recorder)
 })
 
 var _ = AfterSuite(func() {
@@ -177,7 +177,7 @@ var _ = Describe("Termination", func() {
 			Expect(env.Client.Delete(ctx, node)).To(Succeed())
 			node = ExpectNodeExists(ctx, env.Client, node.Name)
 			ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(node))
-			Expect(queue.Has(terminator.NewQueueKey(podSkip, nil))).To(BeFalse())
+			Expect(queue.Has(podSkip)).To(BeFalse())
 			ExpectReconcileSucceeded(ctx, queue, client.ObjectKey{})
 
 			// Expect node to exist and be draining
@@ -205,7 +205,7 @@ var _ = Describe("Termination", func() {
 			Expect(env.Client.Delete(ctx, node)).To(Succeed())
 			node = ExpectNodeExists(ctx, env.Client, node.Name)
 			ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(node))
-			Expect(queue.Has(terminator.NewQueueKey(podSkip, nil))).To(BeFalse())
+			Expect(queue.Has(podSkip)).To(BeFalse())
 			ExpectReconcileSucceeded(ctx, queue, client.ObjectKey{})
 
 			// Expect node to exist and be draining
@@ -215,7 +215,7 @@ var _ = Describe("Termination", func() {
 			EventuallyExpectTerminating(ctx, env.Client, podEvict)
 			ExpectDeleted(ctx, env.Client, podEvict)
 
-			Expect(queue.Has(terminator.NewQueueKey(podSkip, nil))).To(BeFalse())
+			Expect(queue.Has(podSkip)).To(BeFalse())
 
 			// Reconcile to delete node
 			node = ExpectNodeExists(ctx, env.Client, node.Name)
@@ -325,7 +325,7 @@ var _ = Describe("Termination", func() {
 
 			// Expect podNoEvict to fail eviction due to PDB, and be retried
 			Eventually(func() int {
-				return queue.NumRequeues(terminator.NewQueueKey(podNoEvict, nil))
+				return queue.NumRequeues(terminator.NewQueueKey(podNoEvict))
 			}).Should(BeNumerically(">=", 1))
 
 			// Delete pod to simulate successful eviction
@@ -481,7 +481,7 @@ var _ = Describe("Termination", func() {
 			ExpectReconcileSucceeded(ctx, queue, client.ObjectKey{})
 
 			// Expect mirror pod to not be queued for eviction
-			Expect(queue.Has(terminator.NewQueueKey(podNoEvict, nil))).To(BeFalse())
+			Expect(queue.Has(podNoEvict)).To(BeFalse())
 
 			// Expect podEvict to be enqueued for eviction then be successful
 			EventuallyExpectTerminating(ctx, env.Client, podEvict)
@@ -646,7 +646,7 @@ var _ = Describe("Termination", func() {
 			ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(node))
 
 			// Expect that the old pod's key still exists in the queue
-			Expect(queue.Has(terminator.NewQueueKey(pod, nil))).To(BeTrue())
+			Expect(queue.Has(pod)).To(BeTrue())
 
 			// Re-create the pod and node, it should now have the same name, but a different UUID
 			node = test.Node(test.NodeOptions{
@@ -688,6 +688,9 @@ var _ = Describe("Termination", func() {
 				Phase: v1.PodRunning,
 			})
 
+			node.ObjectMeta.Annotations = map[string]string{
+				v1beta1.NodeExpirationTimeAnnotationKey: time.Now().Add(time.Minute * 5).Format(time.RFC3339),
+			}
 			nodeClaim.Spec.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
 			ExpectApplied(ctx, env.Client, node, nodeClaim, podNoEvict, pdb)
 
@@ -716,7 +719,10 @@ var _ = Describe("Termination", func() {
 				Phase: v1.PodRunning,
 			})
 
-			nodeClaim.Spec.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 0}
+			node.ObjectMeta.Annotations = map[string]string{
+				v1beta1.NodeExpirationTimeAnnotationKey: time.Now().Add(time.Second * -10).Format(time.RFC3339),
+			}
+			nodeClaim.Spec.TerminationGracePeriod = &metav1.Duration{Duration: time.Minute * 1}
 			ExpectApplied(ctx, env.Client, node, nodeClaim, podNoEvict, pdb)
 
 			Expect(env.Client.Delete(ctx, node)).To(Succeed())
