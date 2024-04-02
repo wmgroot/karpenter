@@ -135,6 +135,23 @@ spec:
                         memory leak protection, and disruption testing.
                       pattern: ^(([0-9]+(s|m|h))+)|(Never)$
                       type: string
+                    terminationGracePeriod:
+                      description: |-
+                        TerminationGracePeriod is the duration the controller will wait before forcefully terminating a node, measured from when deletion is first initiated.
+                        Once the GracePeriod has expired, all pods on the node will be shutdown using the official non-graceful shutdown taint.
+                        If a pod would be terminated without being granted its full terminationGracePeriodSeconds prior to the node timeout,
+                        that pod will be deleted up at T = node timeout - pod terminationGracePeriodSeconds.
+
+
+                        Warning: this bypasses a Pod's terminationGracePeriodSeconds value, karpenter.sh/do-not-disrupt annotation, and any PDBs.
+                        Requires: K8s 1.26 or higher:  https://kubernetes.io/docs/concepts/architecture/nodes/#non-graceful-node-shutdown
+
+
+                        This field is intended to be used by cluster administrators to enforce that nodes can be cycled within a given time period.
+                        When set, nodes may be disrupted for expiration or drift, regardless of karpenter.sh/do-not-disrupt annotations or PDBs set on pods.
+                        It can also be used to allow maximum time limits for long-running jobs which can delay node termination with preStop hooks.
+                        If left undefined, the controller will wait indefinitely for pods to be drained.
+                      type: string
                   type: object
                   x-kubernetes-validations:
                     - message: consolidateAfter cannot be combined with consolidationPolicy=WhenUnderutilized
