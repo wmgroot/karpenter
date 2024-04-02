@@ -68,6 +68,7 @@ func (c *Controller) Reconcile(_ context.Context, _ *v1beta1.NodeClaim) (reconci
 func (c *Controller) Finalize(ctx context.Context, nodeClaim *v1beta1.NodeClaim) (reconcile.Result, error) {
 	ctx = logging.WithLogger(ctx, logging.FromContext(ctx).With("node", nodeClaim.Status.NodeName, "provider-id", nodeClaim.Status.ProviderID))
 	stored := nodeClaim.DeepCopy()
+
 	if !controllerutil.ContainsFinalizer(nodeClaim, v1beta1.TerminationFinalizer) {
 		return reconcile.Result{}, nil
 	}
@@ -76,6 +77,11 @@ func (c *Controller) Finalize(ctx context.Context, nodeClaim *v1beta1.NodeClaim)
 		return reconcile.Result{}, err
 	}
 	for _, node := range nodes {
+		err = c.ensureTerminationGracePeriodExpirationAnnotation(ctx, node, nodeClaim)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+
 		// If we still get the Node, but it's already marked as terminating, we don't need to call Delete again
 		if node.DeletionTimestamp.IsZero() {
 			// We delete nodes to trigger the node finalization and deletion flow
@@ -113,6 +119,39 @@ func (c *Controller) Finalize(ctx context.Context, nodeClaim *v1beta1.NodeClaim)
 		logging.FromContext(ctx).Infof("deleted nodeclaim")
 	}
 	return reconcile.Result{}, nil
+}
+
+func (c *Controller) ensureTerminationGracePeriodExpirationAnnotation(ctx context.Context, node *v1.Node, nodeClaim *v1beta1.NodeClaim) error {
+	if nodeClaim.Spec.TerminationGracePeriod != nil && nodeClaim.ObjectMeta.DeletionTimestamp != nil {
+		expirationTimeString := nodeClaim.DeletionTimestamp.Time.Add(nodeClaim.Spec.TerminationGracePeriod.Duration).Format(time.RFC3339)
+
+		// set annotation if no annotations exist
+		if node.ObjectMeta.Annotations == nil {
+			return c.annotateTerminationGracePeriodExpirationTime(ctx, node, expirationTimeString)
+		}
+
+		// set annotation if the desired annotation does not exist
+		if _, exists := node.ObjectMeta.Annotations[v1beta1.NodeExpirationTimeAnnotationKey]; !exists {
+			return c.annotateTerminationGracePeriodExpirationTime(ctx, node, expirationTimeString)
+		}
+	}
+
+	return nil
+}
+
+func (c *Controller) annotateTerminationGracePeriodExpirationTime(ctx context.Context, node *v1.Node, expirationTime string) error {
+	stored := node.DeepCopy()
+	if node.ObjectMeta.Annotations == nil {
+		node.ObjectMeta.Annotations = map[string]string{}
+	}
+	node.ObjectMeta.Annotations[v1beta1.NodeExpirationTimeAnnotationKey] = expirationTime
+
+	if err := c.kubeClient.Patch(ctx, node, client.MergeFrom(stored)); err != nil {
+		return client.IgnoreNotFound(fmt.Errorf("adding %s annotation, %w", v1beta1.NodeExpirationTimeAnnotationKey, err))
+	}
+	logging.FromContext(ctx).With(v1beta1.NodeExpirationTimeAnnotationKey, expirationTime).Infof("annotated node")
+
+	return nil
 }
 
 func (*Controller) Name() string {

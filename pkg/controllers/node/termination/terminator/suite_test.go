@@ -18,8 +18,10 @@ package terminator_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -29,7 +31,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/uuid"
+	clock "k8s.io/utils/clock/testing"
 	. "knative.dev/pkg/logging/testing"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/karpenter/pkg/controllers/node/termination/terminator"
@@ -47,6 +51,8 @@ var recorder *test.EventRecorder
 var queue *terminator.Queue
 var pdb *policyv1.PodDisruptionBudget
 var pod *v1.Pod
+var fakeClock *clock.FakeClock
+var terminatorInstance *terminator.Terminator
 
 func TestAPIs(t *testing.T) {
 	ctx = TestContextWithLogger(t)
@@ -55,10 +61,12 @@ func TestAPIs(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	fakeClock = clock.NewFakeClock(time.Now())
 	env = test.NewEnvironment(scheme.Scheme, test.WithCRDs(apis.CRDs...))
 	ctx = options.ToContext(ctx, test.Options(test.OptionsFields{FeatureGates: test.FeatureGates{Drift: lo.ToPtr(true)}}))
 	recorder = test.NewEventRecorder()
 	queue = terminator.NewQueue(env.Client, recorder)
+	terminatorInstance = terminator.NewTerminator(fakeClock, env.Client, queue, recorder)
 })
 
 var _ = AfterSuite(func() {
@@ -152,6 +160,37 @@ var _ = Describe("Eviction/Queue", func() {
 			for i := 0; i < 10000; i++ {
 				queue.Add(test.Pod())
 			}
+		})
+	})
+
+	Context("Pod Deletion API", func() {
+		It("should not delete a pod with no nodeExpirationTime", func() {
+			ExpectApplied(ctx, env.Client, pod)
+
+			Expect(terminatorInstance.DeleteExpiringPods(ctx, []*v1.Pod{pod}, nil)).To(Succeed())
+			ExpectExists(ctx, env.Client, pod)
+			Expect(recorder.Calls("Deleted")).To(Equal(0))
+		})
+		It("should not delete a pod with terminationGracePeriodSeconds still remaining before nodeExpirationTime", func() {
+			gracePeriod := int64(60)
+			pod.Spec.TerminationGracePeriodSeconds = &gracePeriod
+			ExpectApplied(ctx, env.Client, pod)
+			fmt.Printf("pod: %#v\n", pod)
+
+			nodeExpirationTime := time.Now().Add(time.Minute * 5)
+			Expect(terminatorInstance.DeleteExpiringPods(ctx, []*v1.Pod{pod}, &nodeExpirationTime)).To(Succeed())
+			ExpectExists(ctx, env.Client, pod)
+			Expect(recorder.Calls("Deleted")).To(Equal(0))
+		})
+		It("should delete a pod with less than terminationGracePeriodSeconds remaining before nodeExpirationTime", func() {
+			gracePeriod := int64(120)
+			pod.Spec.TerminationGracePeriodSeconds = &gracePeriod
+			ExpectApplied(ctx, env.Client, pod)
+
+			nodeExpirationTime := time.Now().Add(time.Minute * 1)
+			Expect(terminatorInstance.DeleteExpiringPods(ctx, []*v1.Pod{pod}, &nodeExpirationTime)).To(Succeed())
+			ExpectNotFound(ctx, env.Client, pod)
+			Expect(recorder.Calls("Deleted")).To(Equal(1))
 		})
 	})
 })
