@@ -20,10 +20,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/samber/lo"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"knative.dev/pkg/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -220,6 +222,31 @@ func NewFromNode(node *v1.Node) *v1beta1.NodeClaim {
 	nc.StatusConditions().MarkTrue(v1beta1.Launched)
 	nc.StatusConditions().MarkTrue(v1beta1.Registered)
 	return nc
+}
+
+// NodePoolForNodeClaim is a helper function that takes a v1beta1.NodeClaim and finds its matching NodePool using its ownerRefs
+func NodePoolForNodeClaim(ctx context.Context, c client.Client, nodeClaim *v1beta1.NodeClaim) (*v1beta1.NodePool, error) {
+	nodePool := &v1beta1.NodePool{}
+	nodePoolRef, ok := lo.Find(nodeClaim.OwnerReferences, func(o metav1.OwnerReference) bool {
+		// verify that we're finding Karpenter's NodePool of any version permutation
+		groupVersion, err := schema.ParseGroupVersion(o.APIVersion)
+		if err != nil {
+			return false
+		}
+		return strings.HasPrefix(groupVersion.Group, v1beta1.Group) && o.Kind == "NodePool"
+	})
+	if !ok {
+		return nil, fmt.Errorf("could not find NodePool for NodeClaim")
+	}
+
+	nodePoolName := types.NamespacedName{
+		Name: nodePoolRef.Name,
+	}
+	if err := c.Get(ctx, nodePoolName, nodePool); err != nil {
+		return nil, fmt.Errorf("retrieving NodePool, %w", err)
+	}
+
+	return nodePool, nil
 }
 
 func UpdateNodeOwnerReferences(nodeClaim *v1beta1.NodeClaim, node *v1.Node) *v1.Node {

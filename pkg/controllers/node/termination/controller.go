@@ -81,10 +81,20 @@ func (c *Controller) Finalize(ctx context.Context, node *v1.Node) (reconcile.Res
 	if err := c.deleteAllNodeClaims(ctx, node); err != nil {
 		return reconcile.Result{}, fmt.Errorf("deleting nodeclaims, %w", err)
 	}
-	if err := c.terminator.Taint(ctx, node); err != nil {
-		return reconcile.Result{}, fmt.Errorf("tainting node, %w", err)
+
+	nodeGracePeriodExpirationTime, err := c.nodeExpirationTime(node)
+	if err != nil {
+		return reconcile.Result{}, err
 	}
-	if err := c.terminator.Drain(ctx, node); err != nil {
+	if nodeGracePeriodExpirationTime != nil && time.Now().After(*nodeGracePeriodExpirationTime) {
+		if err := c.terminator.Taint(ctx, node, v1beta1.DisruptionNonGracefulShutdown); err != nil {
+			return reconcile.Result{}, fmt.Errorf("tainting node with %s,  %w", v1.TaintNodeOutOfService, err)
+		}
+	}
+	if err := c.terminator.Taint(ctx, node, v1beta1.DisruptionNoScheduleTaint); err != nil {
+		return reconcile.Result{}, fmt.Errorf("tainting node with %s, %w", v1beta1.DisruptionTaintKey, err)
+	}
+	if err := c.terminator.Drain(ctx, node, nodeGracePeriodExpirationTime); err != nil {
 		if !terminator.IsNodeDrainError(err) {
 			return reconcile.Result{}, fmt.Errorf("draining node, %w", err)
 		}
@@ -102,6 +112,7 @@ func (c *Controller) Finalize(ctx context.Context, node *v1.Node) (reconcile.Res
 				return reconcile.Result{}, fmt.Errorf("getting nodeclaim, %w", err)
 			}
 		}
+
 		return reconcile.Result{RequeueAfter: 1 * time.Second}, nil
 	}
 	// Be careful when removing this delete call in the Node termination flow
@@ -155,6 +166,18 @@ func (c *Controller) removeFinalizer(ctx context.Context, n *v1.Node) error {
 		logging.FromContext(ctx).Infof("deleted node")
 	}
 	return nil
+}
+
+func (c *Controller) nodeExpirationTime(node *v1.Node) (*time.Time, error) {
+	if expirationTimeString, exists := node.ObjectMeta.Annotations[v1beta1.NodeExpirationTimeAnnotationKey]; exists {
+		expirationTime, err := time.Parse(time.RFC3339, expirationTimeString)
+		if err != nil {
+			return nil, fmt.Errorf("parsing %s annotation, %w", v1beta1.NodeExpirationTimeAnnotationKey, err)
+		}
+		return &expirationTime, nil
+	}
+
+	return nil, nil
 }
 
 func (c *Controller) Builder(_ context.Context, m manager.Manager) operatorcontroller.Builder {
