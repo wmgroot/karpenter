@@ -31,7 +31,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"sigs.k8s.io/karpenter/pkg/apis/v1beta1"
-	"sigs.k8s.io/karpenter/pkg/scheduling"
 )
 
 // PodEventHandler is a watcher on v1.Pods that maps Pods to NodeClaim based on the node names
@@ -74,12 +73,32 @@ func NodeEventHandler(c client.Client) handler.EventHandler {
 	})
 }
 
-// NodePoolEventHandler is a watcher on v1beta1.NodeClaim that maps Provisioner to NodeClaims based
+// NodePoolEventHandler is a watcher on v1beta1.NodeClaim that maps NodePool to NodeClaims based
 // on the v1beta1.NodePoolLabelKey and enqueues reconcile.Requests for the NodeClaim
 func NodePoolEventHandler(c client.Client) handler.EventHandler {
 	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) (requests []reconcile.Request) {
 		nodeClaimList := &v1beta1.NodeClaimList{}
 		if err := c.List(ctx, nodeClaimList, client.MatchingLabels(map[string]string{v1beta1.NodePoolLabelKey: o.GetName()})); err != nil {
+			return requests
+		}
+		return lo.Map(nodeClaimList.Items, func(n v1beta1.NodeClaim, _ int) reconcile.Request {
+			return reconcile.Request{
+				NamespacedName: client.ObjectKeyFromObject(&n),
+			}
+		})
+	})
+}
+
+// NodeClassEventHandler is a watcher on v1beta1.NodeClaim that maps NodeClass to NodeClaims based
+// on the nodeClassRef and enqueues reconcile.Requests for the NodeClaim
+func NodeClassEventHandler(c client.Client) handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) (requests []reconcile.Request) {
+		nodeClaimList := &v1beta1.NodeClaimList{}
+		if err := c.List(ctx, nodeClaimList, client.MatchingFields{
+			"spec.nodeClassRef.apiVersion": o.GetObjectKind().GroupVersionKind().GroupVersion().String(),
+			"spec.nodeClassRef.kind":       o.GetObjectKind().GroupVersionKind().Kind,
+			"spec.nodeClassRef.name":       o.GetName(),
+		}); err != nil {
 			return requests
 		}
 		return lo.Map(nodeClaimList.Items, func(n v1beta1.NodeClaim, _ int) reconcile.Request {
@@ -168,38 +187,6 @@ func AllNodesForNodeClaim(ctx context.Context, c client.Client, nodeClaim *v1bet
 		return nil, fmt.Errorf("listing nodes, %w", err)
 	}
 	return lo.ToSlicePtr(nodeList.Items), nil
-}
-
-// NewFromNode converts a node into a pseudo-NodeClaim using known values from the node
-// Deprecated: This NodeClaim generator function can be removed when v1beta1 migration has completed.
-func NewFromNode(node *v1.Node) *v1beta1.NodeClaim {
-	nc := &v1beta1.NodeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        node.Name,
-			Annotations: node.Annotations,
-			Labels:      node.Labels,
-			Finalizers:  []string{v1beta1.TerminationFinalizer},
-		},
-		Spec: v1beta1.NodeClaimSpec{
-			Taints:       node.Spec.Taints,
-			Requirements: scheduling.NewLabelRequirements(node.Labels).NodeSelectorRequirements(),
-			Resources: v1beta1.ResourceRequirements{
-				Requests: node.Status.Allocatable,
-			},
-		},
-		Status: v1beta1.NodeClaimStatus{
-			NodeName:    node.Name,
-			ProviderID:  node.Spec.ProviderID,
-			Capacity:    node.Status.Capacity,
-			Allocatable: node.Status.Allocatable,
-		},
-	}
-	if _, ok := node.Labels[v1beta1.NodeInitializedLabelKey]; ok {
-		nc.StatusConditions().MarkTrue(v1beta1.Initialized)
-	}
-	nc.StatusConditions().MarkTrue(v1beta1.Launched)
-	nc.StatusConditions().MarkTrue(v1beta1.Registered)
-	return nc
 }
 
 func UpdateNodeOwnerReferences(nodeClaim *v1beta1.NodeClaim, node *v1.Node) *v1.Node {

@@ -124,7 +124,7 @@ type Budget struct {
 	// This is required if Schedule is set.
 	// This regex has an optional 0s at the end since the duration.String() always adds
 	// a 0s at the end.
-	// +kubebuilder:validation:Pattern=`^([0-9]+(m|h)+(0s)?)$`
+	// +kubebuilder:validation:Pattern=`^((([0-9]+(h|m))|([0-9]+h[0-9]+m))(0s)?)$`
 	// +kubebuilder:validation:Type="string"
 	// +optional
 	Duration *metav1.Duration `json:"duration,omitempty" hash:"ignore"`
@@ -194,7 +194,7 @@ type NodePool struct {
 // 1. A field changes its default value for an existing field that is already hashed
 // 2. A field is added to the hash calculation with an already-set value
 // 3. A field is removed from the hash calculations
-const NodePoolHashVersion = "v1"
+const NodePoolHashVersion = "v2"
 
 func (in *NodePool) Hash() string {
 	return fmt.Sprint(lo.Must(hashstructure.Hash(in.Spec.Template, hashstructure.FormatV2, &hashstructure.HashOptions{

@@ -127,10 +127,11 @@ func NewCandidate(ctx context.Context, kubeClient client.Client, recorder events
 			return nil, fmt.Errorf(`pod %q has "karpenter.sh/do-not-disrupt" annotation`, client.ObjectKeyFromObject(po))
 		}
 	}
-	if pdbKey, ok := pdbs.CanEvictPods(pods); !ok {
-		recorder.Publish(disruptionevents.Blocked(node.Node, node.NodeClaim, fmt.Sprintf("PDB %q prevents pod evictions", pdbKey))...)
-		return nil, fmt.Errorf("pdb %q prevents pod evictions", pdbKey)
-	}
+	// if pdbKey, ok := pdbs.CanEvictPods(pods); !ok {
+	// 	logging.FromContext(ctx).Infof("ignoring non-evictable pdb: %q", pdbKey)
+	// 	// recorder.Publish(disruptionevents.Blocked(node.Node, node.NodeClaim, fmt.Sprintf("PDB %q prevents pod evictions", pdbKey))...)
+	// 	// return nil, fmt.Errorf("pdb %q prevents pod evictions", pdbKey)
+	// }
 	return &Candidate{
 		StateNode:         node.DeepCopy(),
 		instanceType:      instanceType,
