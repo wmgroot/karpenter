@@ -28,17 +28,18 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/tools/record"
 	clock "k8s.io/utils/clock/testing"
 	. "knative.dev/pkg/logging/testing"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	nodeclaimtermination "sigs.k8s.io/karpenter/pkg/controllers/nodeclaim/termination"
 
 	"sigs.k8s.io/karpenter/pkg/apis"
 	"sigs.k8s.io/karpenter/pkg/apis/v1beta1"
-	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider/fake"
 	nodeclaimlifecycle "sigs.k8s.io/karpenter/pkg/controllers/nodeclaim/lifecycle"
 	"sigs.k8s.io/karpenter/pkg/events"
@@ -100,6 +101,12 @@ var _ = Describe("Termination", func() {
 				Finalizers: []string{
 					v1beta1.TerminationFinalizer,
 				},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: v1beta1.Group + "/v1beta1",
+					Kind:       "NodePool",
+					Name:       nodePool.Name,
+					UID:        uuid.NewUUID(),
+				}},
 			},
 			Spec: v1beta1.NodeClaimSpec{
 				Resources: v1beta1.ResourceRequirements{
@@ -265,7 +272,7 @@ var _ = Describe("Termination", func() {
 		Expect(node.ObjectMeta.Annotations).To(BeNil())
 	})
 	It("should annotate the node if the NodeClaim has a terminationGracePeriod", func() {
-		nodeClaim.Spec.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
+		nodePool.Spec.Disruption.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
 		ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
 		ExpectReconcileSucceeded(ctx, nodeClaimLifecycleController, client.ObjectKeyFromObject(nodeClaim))
 
@@ -284,7 +291,7 @@ var _ = Describe("Termination", func() {
 		Expect(annotationExists).To(BeTrue())
 	})
 	It("should not change the annotation if the NodeClaim has a terminationGracePeriod and the annotation already exists", func() {
-		nodeClaim.Spec.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
+		nodePool.Spec.Disruption.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
 		ExpectApplied(ctx, env.Client, nodePool, nodeClaim)
 		ExpectReconcileSucceeded(ctx, nodeClaimLifecycleController, client.ObjectKeyFromObject(nodeClaim))
 

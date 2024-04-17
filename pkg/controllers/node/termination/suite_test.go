@@ -46,6 +46,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	"knative.dev/pkg/ptr"
 
 	. "knative.dev/pkg/logging/testing"
@@ -85,9 +86,17 @@ var _ = AfterSuite(func() {
 var _ = Describe("Termination", func() {
 	var node *v1.Node
 	var nodeClaim *v1beta1.NodeClaim
+	var nodePool *v1beta1.NodePool
 
 	BeforeEach(func() {
+		nodePool = test.NodePool()
 		nodeClaim, node = test.NodeClaimAndNode(v1beta1.NodeClaim{ObjectMeta: metav1.ObjectMeta{Finalizers: []string{v1beta1.TerminationFinalizer}}})
+		nodeClaim.ObjectMeta.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion: v1beta1.Group + "/v1beta1",
+			Kind:       "NodePool",
+			Name:       nodePool.Name,
+			UID:        uuid.NewUUID(),
+		}}
 		node.Labels[v1beta1.NodePoolLabelKey] = test.NodePool().Name
 		cloudProvider.CreatedNodeClaims[node.Spec.ProviderID] = nodeClaim
 	})
@@ -674,6 +683,35 @@ var _ = Describe("Termination", func() {
 				g.Expect(pod.DeletionTimestamp.IsZero()).To(BeTrue())
 			}, ReconcilerPropagationTime, RequestInterval).Should(Succeed())
 		})
+		It("should not taint a node that has no expiration annotations", func() {
+			minAvailable := intstr.FromInt(1)
+			labelSelector := map[string]string{test.RandomName(): test.RandomName()}
+			pdb := test.PodDisruptionBudget(test.PDBOptions{
+				Labels: labelSelector,
+				// Don't let any pod evict
+				MinAvailable: &minAvailable,
+			})
+			podNoEvict := test.Pod(test.PodOptions{
+				NodeName: node.Name,
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:          labelSelector,
+					OwnerReferences: defaultOwnerRefs,
+				},
+				Phase: v1.PodRunning,
+			})
+
+			node.ObjectMeta.Annotations = map[string]string{}
+			nodePool.Spec.Disruption.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
+			ExpectApplied(ctx, env.Client, node, nodeClaim, nodePool, podNoEvict, pdb)
+
+			Expect(env.Client.Delete(ctx, node)).To(Succeed())
+			ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(node))
+			ExpectReconcileSucceeded(ctx, queue, client.ObjectKey{})
+			ExpectNodeExists(ctx, env.Client, node.Name)
+
+			Expect(env.Client.Get(ctx, types.NamespacedName{Name: node.Name}, node)).To(Succeed())
+			Expect(node.Spec.Taints).ToNot(ContainElement(v1beta1.DisruptionNonGracefulShutdown))
+		})
 		It("should not taint a node that has not yet exceeded it's terminationGracePeriod", func() {
 			minAvailable := intstr.FromInt(1)
 			labelSelector := map[string]string{test.RandomName(): test.RandomName()}
@@ -694,15 +732,14 @@ var _ = Describe("Termination", func() {
 			node.ObjectMeta.Annotations = map[string]string{
 				v1beta1.NodeExpirationTimeAnnotationKey: time.Now().Add(time.Minute * 5).Format(time.RFC3339),
 			}
-			nodeClaim.Spec.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
-			ExpectApplied(ctx, env.Client, node, nodeClaim, podNoEvict, pdb)
+			nodePool.Spec.Disruption.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
+			ExpectApplied(ctx, env.Client, node, nodeClaim, nodePool, podNoEvict, pdb)
 
 			Expect(env.Client.Delete(ctx, node)).To(Succeed())
 			ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(node))
 			ExpectReconcileSucceeded(ctx, queue, client.ObjectKey{})
 			ExpectNodeExists(ctx, env.Client, node.Name)
-
-			Expect(env.Client.Get(ctx, types.NamespacedName{Name: node.Name}, node)).To(Succeed())
+			ExpectPodExists(ctx, env.Client, podNoEvict.Name, podNoEvict.Namespace)
 			Expect(node.Spec.Taints).ToNot(ContainElement(v1beta1.DisruptionNonGracefulShutdown))
 		})
 		It("should taint a node that has exceeded it's terminationGracePeriod", func() {
@@ -725,8 +762,8 @@ var _ = Describe("Termination", func() {
 			node.ObjectMeta.Annotations = map[string]string{
 				v1beta1.NodeExpirationTimeAnnotationKey: time.Now().Add(time.Second * -10).Format(time.RFC3339),
 			}
-			nodeClaim.Spec.TerminationGracePeriod = &metav1.Duration{Duration: time.Minute * 1}
-			ExpectApplied(ctx, env.Client, node, nodeClaim, podNoEvict, pdb)
+			nodePool.Spec.Disruption.TerminationGracePeriod = &metav1.Duration{Duration: time.Minute * 1}
+			ExpectApplied(ctx, env.Client, node, nodeClaim, nodePool, podNoEvict, pdb)
 
 			Expect(env.Client.Delete(ctx, node)).To(Succeed())
 			ExpectReconcileSucceeded(ctx, terminationController, client.ObjectKeyFromObject(node))
@@ -742,9 +779,9 @@ var _ = Describe("Termination", func() {
 				ObjectMeta:                    metav1.ObjectMeta{OwnerReferences: defaultOwnerRefs},
 				TerminationGracePeriodSeconds: lo.ToPtr(int64(30)),
 			})
-			nodeClaim.Spec.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
+			nodePool.Spec.Disruption.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
 			fakeClock.SetTime(time.Now())
-			ExpectApplied(ctx, env.Client, node, nodeClaim, pod)
+			ExpectApplied(ctx, env.Client, node, nodeClaim, nodePool, pod)
 
 			Expect(env.Client.Delete(ctx, node)).To(Succeed())
 			fakeClock.SetTime(time.Now().Add(90 * time.Second))
@@ -766,9 +803,9 @@ var _ = Describe("Termination", func() {
 				ObjectMeta:                    metav1.ObjectMeta{OwnerReferences: defaultOwnerRefs},
 				TerminationGracePeriodSeconds: lo.ToPtr(int64(60)),
 			})
-			nodeClaim.Spec.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
+			nodePool.Spec.Disruption.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
 			fakeClock.SetTime(time.Now())
-			ExpectApplied(ctx, env.Client, node, nodeClaim, pod)
+			ExpectApplied(ctx, env.Client, node, nodeClaim, nodePool, pod)
 
 			Expect(env.Client.Delete(ctx, node)).To(Succeed())
 			fakeClock.SetTime(time.Now().Add(90 * time.Second))

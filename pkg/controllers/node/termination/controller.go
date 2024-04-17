@@ -82,7 +82,7 @@ func (c *Controller) Finalize(ctx context.Context, node *v1.Node) (reconcile.Res
 		return reconcile.Result{}, fmt.Errorf("deleting nodeclaims, %w", err)
 	}
 
-	nodeGracePeriodExpirationTime, err := c.expireNode(ctx, node)
+	nodeGracePeriodExpirationTime, err := c.taintExpiredNode(ctx, node)
 	if err != nil {
 		return reconcile.Result{}, fmt.Errorf("expiring node, %w", err)
 	}
@@ -164,21 +164,27 @@ func (c *Controller) removeFinalizer(ctx context.Context, n *v1.Node) error {
 	return nil
 }
 
-func (c *Controller) expireNode(ctx context.Context, node *v1.Node) (*time.Time, error) {
+func (c *Controller) taintExpiredNode(ctx context.Context, node *v1.Node) (*time.Time, error) {
+	nodeGracePeriodExpirationTime, err := c.nodeExpirationTime(node)
+	if err != nil {
+		return nil, err
+	} else if nodeGracePeriodExpirationTime != nil && time.Now().After(*nodeGracePeriodExpirationTime) {
+		taint := v1beta1.DisruptionNonGracefulShutdown
+		logging.FromContext(ctx).With("taint.Key", taint.Key).With("taint.Effect", taint.Effect).With("taint.Value", taint.Value).Infof("terminationGracePeriod for the node has expired, tainting")
+		if err := c.terminator.Taint(ctx, node, taint); err != nil {
+			return nil, fmt.Errorf("tainting node: %w", err)
+		}
+	}
+	return nodeGracePeriodExpirationTime, nil
+}
+
+func (c *Controller) nodeExpirationTime(node *v1.Node) (*time.Time, error) {
 	if expirationTimeString, exists := node.ObjectMeta.Annotations[v1beta1.NodeExpirationTimeAnnotationKey]; exists {
 		c.recorder.Publish(terminatorevents.NodeTerminationGracePeriod(node, expirationTimeString))
 
 		expirationTime, err := time.Parse(time.RFC3339, expirationTimeString)
 		if err != nil {
 			return nil, fmt.Errorf("parsing %s annotation, %w", v1beta1.NodeExpirationTimeAnnotationKey, err)
-		}
-
-		if time.Now().After(expirationTime) {
-			taint := v1beta1.DisruptionNonGracefulShutdown
-			logging.FromContext(ctx).With("taint.Key", taint.Key).With("taint.Effect", taint.Effect).With("taint.Value", taint.Value).Infof("terminationGracePeriod for the node has expired, tainting")
-			if err := c.terminator.Taint(ctx, node, taint); err != nil {
-				return &expirationTime, fmt.Errorf("tainting node: %w", err)
-			}
 		}
 		return &expirationTime, nil
 	}

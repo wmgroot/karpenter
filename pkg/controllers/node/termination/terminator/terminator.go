@@ -90,12 +90,13 @@ func (t *Terminator) Drain(ctx context.Context, node *v1.Node, nodeGracePeriodEx
 		return fmt.Errorf("listing pods on node, %w", err)
 	}
 
-	if err := t.DeleteExpiringPods(ctx, pods, nodeGracePeriodExpirationTime); err != nil {
+	// evictablePods are pods that aren't yet terminating are eligible to have the eviction API called against them
+	evictablePods := lo.Filter(pods, func(p *v1.Pod, _ int) bool { return podutil.IsEvictable(p) })
+
+	if err := t.DeleteExpiringPods(ctx, evictablePods, nodeGracePeriodExpirationTime); err != nil {
 		return err
 	}
 
-	// evictablePods are pods that aren't yet terminating are eligible to have the eviction API called against them
-	evictablePods := lo.Filter(pods, func(p *v1.Pod, _ int) bool { return podutil.IsEvictable(p) })
 	t.Evict(evictablePods)
 
 	// podsWaitingEvictionCount is the number of pods that either haven't had eviction called against them yet
@@ -128,15 +129,15 @@ func (t *Terminator) Evict(pods []*v1.Pod) {
 
 	// EvictInOrder evicts only the first list of pods which is not empty
 	// future Evict calls will catch later lists of pods that were not initially evicted
-	t.EvictInOrder([][]*v1.Pod{
+	t.EvictInOrder(
 		nonCriticalNonDaemon,
 		nonCriticalDaemon,
 		criticalNonDaemon,
 		criticalDaemon,
-	})
+	)
 }
 
-func (t *Terminator) EvictInOrder(pods [][]*v1.Pod) {
+func (t *Terminator) EvictInOrder(pods ...[]*v1.Pod) {
 	for _, podList := range pods {
 		if len(podList) > 0 {
 			// evict the first list of pods that is not empty, ignore the rest

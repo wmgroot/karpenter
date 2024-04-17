@@ -172,8 +172,7 @@ var _ = Describe("Eviction/Queue", func() {
 			Expect(recorder.Calls("Deleted")).To(Equal(0))
 		})
 		It("should not delete a pod with terminationGracePeriodSeconds still remaining before nodeExpirationTime", func() {
-			gracePeriod := int64(60)
-			pod.Spec.TerminationGracePeriodSeconds = &gracePeriod
+			pod.Spec.TerminationGracePeriodSeconds = lo.ToPtr[int64](60)
 			ExpectApplied(ctx, env.Client, pod)
 			fmt.Printf("pod: %#v\n", pod)
 
@@ -183,8 +182,7 @@ var _ = Describe("Eviction/Queue", func() {
 			Expect(recorder.Calls("Deleted")).To(Equal(0))
 		})
 		It("should delete a pod with less than terminationGracePeriodSeconds remaining before nodeExpirationTime", func() {
-			gracePeriod := int64(120)
-			pod.Spec.TerminationGracePeriodSeconds = &gracePeriod
+			pod.Spec.TerminationGracePeriodSeconds = lo.ToPtr[int64](120)
 			ExpectApplied(ctx, env.Client, pod)
 
 			nodeExpirationTime := time.Now().Add(time.Minute * 1)

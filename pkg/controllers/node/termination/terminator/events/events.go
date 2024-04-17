@@ -39,7 +39,7 @@ func DeletePod(pod *v1.Pod) events.Event {
 		InvolvedObject: pod,
 		Type:           v1.EventTypeNormal,
 		Reason:         "Deleted",
-		Message:        fmt.Sprintf("Deleted pod regardless of PDBs and lifecycle hooks, %v seconds before node termination to accommodate it's terminationGracePeriodSeconds", pod.Spec.TerminationGracePeriodSeconds),
+		Message:        fmt.Sprintf("Deleted pod regardless of PDBs and lifecycle hooks, %v seconds before node termination to accommodate its terminationGracePeriodSeconds", pod.Spec.TerminationGracePeriodSeconds),
 		DedupeValues:   []string{pod.Name},
 	}
 }

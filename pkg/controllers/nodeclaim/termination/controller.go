@@ -122,13 +122,24 @@ func (c *Controller) Finalize(ctx context.Context, nodeClaim *v1beta1.NodeClaim)
 }
 
 func (c *Controller) ensureTerminationGracePeriodExpirationAnnotation(ctx context.Context, node *v1.Node, nodeClaim *v1beta1.NodeClaim) error {
-	if nodeClaim.Spec.TerminationGracePeriod != nil && nodeClaim.ObjectMeta.DeletionTimestamp != nil {
-		expirationTimeString := nodeClaim.DeletionTimestamp.Time.Add(nodeClaim.Spec.TerminationGracePeriod.Duration).Format(time.RFC3339)
 
-		// set annotation if no annotations exist
-		if node.ObjectMeta.Annotations == nil {
-			return c.annotateTerminationGracePeriodExpirationTime(ctx, node, expirationTimeString)
-		}
+	// if the expiration annotation is already set, we don't need to do anything
+	if _, exists := node.ObjectMeta.Annotations[v1beta1.NodeExpirationTimeAnnotationKey]; exists {
+		return nil
+	}
+
+	nodePool, err := nodeclaimutil.NodePoolForNodeClaim(ctx, c.kubeClient, nodeClaim)
+	if err != nil {
+		return fmt.Errorf("ensuring node expiration annotation, %w", err)
+	}
+
+	if nodePool != nil && nodePool.Spec.Disruption.TerminationGracePeriod != nil && nodeClaim.ObjectMeta.DeletionTimestamp != nil {
+		expirationTimeString := nodeClaim.DeletionTimestamp.Time.Add(nodePool.Spec.Disruption.TerminationGracePeriod.Duration).Format(time.RFC3339)
+
+		// // set annotation if no annotations exist
+		// if node.ObjectMeta.Annotations == nil {
+		// 	return c.annotateTerminationGracePeriodExpirationTime(ctx, node, expirationTimeString)
+		// }
 
 		// set annotation if the desired annotation does not exist
 		if _, exists := node.ObjectMeta.Annotations[v1beta1.NodeExpirationTimeAnnotationKey]; !exists {
