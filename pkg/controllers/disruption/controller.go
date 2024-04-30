@@ -20,6 +20,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -130,17 +132,21 @@ func (c *Controller) Reconcile(ctx context.Context, _ reconcile.Request) (reconc
 	// Attempt different disruption methods. We'll only let one method perform an action
 	for _, m := range c.methods {
 		c.recordRun(fmt.Sprintf("%T", m))
-		success, err := c.disrupt(ctx, m)
+		_, err := c.disrupt(ctx, m)
 		if err != nil {
 			return reconcile.Result{}, fmt.Errorf("disrupting via %q, %w", m.Type(), err)
 		}
-		if success {
-			return reconcile.Result{RequeueAfter: controller.Immediately}, nil
-		}
+		// ensure we attempt all disruption methods before completing reconciliation
+		// if success {
+		// 	return reconcile.Result{RequeueAfter: controller.Immediately}, nil
+		// }
 	}
 
 	// All methods did nothing, so return nothing to do
-	return reconcile.Result{RequeueAfter: pollingPeriod}, nil
+	// return reconcile.Result{RequeueAfter: pollingPeriod}, nil
+
+	// loop complete, requeue immediately
+	return reconcile.Result{RequeueAfter: controller.Immediately}, nil
 }
 
 func (c *Controller) disrupt(ctx context.Context, disruption Method) (bool, error) {
@@ -193,6 +199,31 @@ func (c *Controller) executeCommand(ctx context.Context, m Method, cmd Command, 
 	if err := state.RequireNoScheduleTaint(ctx, c.kubeClient, true, stateNodes...); err != nil {
 		return multierr.Append(fmt.Errorf("tainting nodes (command-id: %s), %w", commandID, err), state.RequireNoScheduleTaint(ctx, c.kubeClient, false, stateNodes...))
 	}
+
+	sleepTime := os.Getenv("DISRUPTION_ANNOTATION_SLEEP_SECONDS")
+	if len(sleepTime) > 0 {
+		sleepSeconds, err := strconv.Atoi(sleepTime)
+		if err == nil {
+			logging.FromContext(ctx).With("command-id", commandID).With("sleep", sleepTime).Infof("waiting for do-not-disrupt or do-not-consolidate pods that may have scheduled...")
+			time.Sleep(time.Duration(sleepSeconds * int(time.Second)))
+		} else {
+			logging.FromContext(ctx).With("command-id", commandID).With("sleep", sleepTime).With("variable", "DISRUPTION_ANNOTATION_SLEEP_SECONDS").Errorf("parsing disruption sleep time")
+		}
+	}
+
+	// verify that the nodes we intend to disrupt do not have any do-not-disrupt pods, remove the DoNotSchedule disruption taint if they do
+	nodesToNotDisrupt, er := state.ValidateNoScheduleTaint(ctx, c.kubeClient, m.Type(), stateNodes...)
+	if er != nil {
+		return multierr.Append(fmt.Errorf("tainting nodes (command-id: %s), %w", commandID, er), state.RequireNoScheduleTaint(ctx, c.kubeClient, false, stateNodes...))
+	}
+
+	// remove any nodes that had do-not-disrupt pods from the list of nodes we intend to disrupt
+	for _, n := range nodesToNotDisrupt {
+		logging.FromContext(ctx).With("command-id", commandID).Infof("avoiding disruption of node %s due to a do-not-disrupt or do-not-consolidate annotation race condition", n.Node.Name)
+	}
+	cmd.candidates = lo.Reject(cmd.candidates, func(c *Candidate, _ int) bool {
+		return lo.Contains(nodesToNotDisrupt, c.StateNode)
+	})
 
 	var nodeClaimNames []string
 	var err error
