@@ -82,6 +82,10 @@ func (e *Emptiness) Type() string {
 	return metrics.EmptinessReason
 }
 
+func (d *Emptiness) Class() string {
+	return metrics.EventualDisruptionClass
+}
+
 func (e *Emptiness) ConsolidationType() string {
 	return ""
 }

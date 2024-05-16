@@ -36,12 +36,14 @@ import (
 	"sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/events"
+	"sigs.k8s.io/karpenter/pkg/metrics"
 )
 
 type Method interface {
 	ShouldDisrupt(context.Context, *Candidate) bool
 	ComputeCommand(context.Context, map[string]int, ...*Candidate) (Command, scheduling.Results, error)
 	Type() string
+	Class() string
 	ConsolidationType() string
 }
 
@@ -60,8 +62,8 @@ type Candidate struct {
 }
 
 //nolint:gocyclo
-func NewCandidate(ctx context.Context, kubeClient client.Client, recorder events.Recorder, clk clock.Clock, node *state.StateNode, pdbs *PDBLimits,
-	nodePoolMap map[string]*v1beta1.NodePool, nodePoolToInstanceTypesMap map[string]map[string]*cloudprovider.InstanceType, queue *orchestration.Queue) (*Candidate, error) {
+func NewCandidate(ctx context.Context, kubeClient client.Client, recorder events.Recorder, clk clock.Clock, node *state.StateNode, pdbs *PDBLimits, nodePoolMap map[string]*v1beta1.NodePool,
+	nodePoolToInstanceTypesMap map[string]map[string]*cloudprovider.InstanceType, queue *orchestration.Queue, disruptionClass string) (*Candidate, error) {
 
 	if node.Node == nil || node.NodeClaim == nil {
 		return nil, fmt.Errorf("state node doesn't contain both a node and a nodeclaim")
@@ -119,17 +121,21 @@ func NewCandidate(ctx context.Context, kubeClient client.Client, recorder events
 		logging.FromContext(ctx).Errorf("determining node pods, %s", err)
 		return nil, fmt.Errorf("getting pods from state node, %w", err)
 	}
-	for _, po := range pods {
-		// We only consider pods that are actively running for "karpenter.sh/do-not-disrupt"
-		// This means that we will allow Mirror Pods and DaemonSets to block disruption using this annotation
-		if !pod.IsDisruptable(po) {
-			recorder.Publish(disruptionevents.Blocked(node.Node, node.NodeClaim, fmt.Sprintf(`Pod %q has "karpenter.sh/do-not-disrupt" annotation`, client.ObjectKeyFromObject(po)))...)
-			return nil, fmt.Errorf(`pod %q has "karpenter.sh/do-not-disrupt" annotation`, client.ObjectKeyFromObject(po))
+	// if the disruption class is graceful, avoid disruption of pods with blocking PDBs and do-not-disrupt annotations on nodes with a terminationGracePeriod
+	if nodePool.Spec.Disruption.TerminationGracePeriod == nil || disruptionClass == metrics.GracefulDisruptionClass {
+		for _, po := range pods {
+			// We only consider pods that are actively running for "karpenter.sh/do-not-disrupt"
+			// This means that we will allow Mirror Pods and DaemonSets to block disruption using this annotation
+			if !pod.IsDisruptable(po) {
+				recorder.Publish(disruptionevents.Blocked(node.Node, node.NodeClaim, fmt.Sprintf(`Pod %q has "karpenter.sh/do-not-disrupt" annotation`, client.ObjectKeyFromObject(po)))...)
+				return nil, fmt.Errorf(`pod %q has "karpenter.sh/do-not-disrupt" annotation`, client.ObjectKeyFromObject(po))
+			}
 		}
-	}
-	if pdbKey, ok := pdbs.CanEvictPods(pods); !ok {
-		recorder.Publish(disruptionevents.Blocked(node.Node, node.NodeClaim, fmt.Sprintf("PDB %q prevents pod evictions", pdbKey))...)
-		return nil, fmt.Errorf("pdb %q prevents pod evictions", pdbKey)
+
+		if pdbKey, ok := pdbs.CanEvictPods(pods); !ok {
+			recorder.Publish(disruptionevents.Blocked(node.Node, node.NodeClaim, fmt.Sprintf("PDB %q prevents pod evictions", pdbKey))...)
+			return nil, fmt.Errorf("pdb %q prevents pod evictions", pdbKey)
+		}
 	}
 	return &Candidate{
 		StateNode:         node.DeepCopy(),

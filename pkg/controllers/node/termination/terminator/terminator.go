@@ -27,6 +27,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/utils/clock"
 	"knative.dev/pkg/logging"
+	"knative.dev/pkg/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/karpenter/pkg/events"
@@ -90,17 +91,17 @@ func (t *Terminator) Drain(ctx context.Context, node *v1.Node, nodeGracePeriodEx
 		return fmt.Errorf("listing pods on node, %w", err)
 	}
 
-	// evictablePods are pods that aren't yet terminating are eligible to have the eviction API called against them
-	evictablePods := lo.Filter(pods, func(p *v1.Pod, _ int) bool { return podutil.IsEvictable(p) })
-
-	if err := t.DeleteExpiringPods(ctx, evictablePods, nodeGracePeriodExpirationTime); err != nil {
+	reschedulablePods := lo.Filter(pods, func(p *v1.Pod, _ int) bool { return podutil.IsReschedulable(p) })
+	if err := t.DeleteExpiringPods(ctx, reschedulablePods, nodeGracePeriodExpirationTime); err != nil {
 		return err
 	}
 
+	// evictablePods are pods that aren't yet terminating are eligible to have the eviction API called against them
+	evictablePods := lo.Filter(pods, func(p *v1.Pod, _ int) bool { return podutil.IsEvictable(p) })
 	t.Evict(evictablePods)
 
 	// podsWaitingEvictionCount is the number of pods that either haven't had eviction called against them yet
-	// or are still actively terminated and haven't exceeded their termination grace period yet
+	// or are still actively terminating and haven't exceeded their termination grace period yet
 	podsWaitingEvictionCount := lo.CountBy(pods, func(p *v1.Pod) bool { return podutil.IsWaitingEviction(p, t.clock) })
 	if podsWaitingEvictionCount > 0 {
 		return NewNodeDrainError(fmt.Errorf("%d pods are waiting to be evicted", len(pods)))
@@ -155,7 +156,15 @@ func (t *Terminator) DeleteExpiringPods(ctx context.Context, pods []*v1.Pod, nod
 			t.recorder.Publish(terminatorevents.DeletePod(pod))
 
 			// delete pod proactively to give as much of its terminationGracePeriodSeconds as possible for deletion
-			if err := t.kubeClient.Delete(ctx, pod); err != nil {
+			// ensure that we clamp the maximum pod terminationGracePeriodSeconds to the node's remaining expiration time
+			podDeleteTime := deleteTime
+			if podDeleteTime.After(*nodeGracePeriodExpirationTime) {
+				podDeleteTime = nodeGracePeriodExpirationTime
+			}
+			opts := &client.DeleteOptions{
+				GracePeriodSeconds: ptr.Int64(int64(time.Second * time.Until(*podDeleteTime))),
+			}
+			if err := t.kubeClient.Delete(ctx, pod, opts); err != nil {
 				if !apierrors.IsNotFound(err) { // ignore 404, not a problem
 					logging.FromContext(ctx).With("namespace", pod.Namespace).With("name", pod.Name).Errorf("deleting pod, %s", err)
 				}

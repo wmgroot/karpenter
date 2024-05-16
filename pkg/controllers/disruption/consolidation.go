@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/events"
 	"sigs.k8s.io/karpenter/pkg/operator/options"
 	"sigs.k8s.io/karpenter/pkg/scheduling"
+	podutil "sigs.k8s.io/karpenter/pkg/utils/pod"
 )
 
 // consolidationTTL is the TTL between creating a consolidation command and validating that it still works.
@@ -100,6 +101,12 @@ func (c *consolidation) ShouldDisrupt(_ context.Context, cn *Candidate) bool {
 	if cn.nodePool.Spec.Disruption.ConsolidateAfter != nil && cn.nodePool.Spec.Disruption.ConsolidateAfter.Duration == nil {
 		c.recorder.Publish(disruptionevents.Unconsolidatable(cn.Node, cn.NodeClaim, fmt.Sprintf("NodePool %q has consolidation disabled", cn.nodePool.Name))...)
 		return false
+	}
+	for _, pod := range cn.reschedulablePods {
+		// do not allow initiating consolidation disruption on nodes with pods that are not evictable due to blocking PDBs, do-not-disrupt annotation, etc
+		if !podutil.IsEvictable(pod) {
+			return false
+		}
 	}
 	return true
 }

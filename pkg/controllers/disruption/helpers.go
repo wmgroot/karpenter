@@ -201,7 +201,7 @@ func disruptionCost(ctx context.Context, pods []*v1.Pod) float64 {
 
 // GetCandidates returns nodes that appear to be currently deprovisionable based off of their nodePool
 func GetCandidates(ctx context.Context, cluster *state.Cluster, kubeClient client.Client, recorder events.Recorder, clk clock.Clock,
-	cloudProvider cloudprovider.CloudProvider, shouldDeprovision CandidateFilter, queue *orchestration.Queue,
+	cloudProvider cloudprovider.CloudProvider, shouldDeprovision CandidateFilter, disruptionClass string, queue *orchestration.Queue,
 ) ([]*Candidate, error) {
 	nodePoolMap, nodePoolToInstanceTypesMap, err := BuildNodePoolMap(ctx, kubeClient, cloudProvider)
 	if err != nil {
@@ -212,7 +212,7 @@ func GetCandidates(ctx context.Context, cluster *state.Cluster, kubeClient clien
 		return nil, fmt.Errorf("tracking PodDisruptionBudgets, %w", err)
 	}
 	candidates := lo.FilterMap(cluster.Nodes(), func(n *state.StateNode, _ int) (*Candidate, bool) {
-		cn, e := NewCandidate(ctx, kubeClient, recorder, clk, n, pdbs, nodePoolMap, nodePoolToInstanceTypesMap, queue)
+		cn, e := NewCandidate(ctx, kubeClient, recorder, clk, n, pdbs, nodePoolMap, nodePoolToInstanceTypesMap, queue, disruptionClass)
 		return cn, e == nil
 	})
 	// Filter only the valid candidates that we should disrupt

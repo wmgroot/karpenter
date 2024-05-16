@@ -125,6 +125,10 @@ func (e *Expiration) Type() string {
 	return metrics.ExpirationReason
 }
 
+func (d *Expiration) Class() string {
+	return metrics.EventualDisruptionClass
+}
+
 func (e *Expiration) ConsolidationType() string {
 	return ""
 }

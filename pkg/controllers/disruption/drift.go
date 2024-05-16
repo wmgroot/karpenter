@@ -119,6 +119,10 @@ func (d *Drift) Type() string {
 	return metrics.DriftReason
 }
 
+func (d *Drift) Class() string {
+	return metrics.EventualDisruptionClass
+}
+
 func (d *Drift) ConsolidationType() string {
 	return ""
 }

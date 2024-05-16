@@ -37,6 +37,9 @@ const (
 	ExpirationReason    = "expiration"
 	EmptinessReason     = "emptiness"
 	DriftReason         = "drift"
+
+	GracefulDisruptionClass = "graceful" // graceful disruption always respects blocking pod PDBs and the do-not-disrupt annotation
+	EventualDisruptionClass = "eventual" // eventual disruption is bounded by a NodePool's TerminationGracePeriod, regardless of blocking pod PDBs and the do-not-disrupt annotation
 )
 
 // DurationBuckets returns a []float64 of default threshold values for duration histograms.
