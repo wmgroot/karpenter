@@ -25,6 +25,7 @@ import (
 
 	"sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
 	"sigs.k8s.io/karpenter/pkg/metrics"
+	disruptionutils "sigs.k8s.io/karpenter/pkg/utils/disruption"
 )
 
 const SingleNodeConsolidationTimeoutDuration = 3 * time.Minute
@@ -94,6 +95,10 @@ func (s *SingleNodeConsolidation) ComputeCommand(ctx context.Context, disruption
 
 func (s *SingleNodeConsolidation) Type() string {
 	return metrics.ConsolidationReason
+}
+
+func (s *SingleNodeConsolidation) Class() string {
+	return disruptionutils.GracefulDisruptionClass
 }
 
 func (s *SingleNodeConsolidation) ConsolidationType() string {

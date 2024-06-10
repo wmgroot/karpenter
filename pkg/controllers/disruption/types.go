@@ -43,6 +43,7 @@ type Method interface {
 	ShouldDisrupt(context.Context, *Candidate) bool
 	ComputeCommand(context.Context, map[string]int, ...*Candidate) (Command, scheduling.Results, error)
 	Type() string
+	Class() string
 	ConsolidationType() string
 }
 
@@ -62,10 +63,10 @@ type Candidate struct {
 
 //nolint:gocyclo
 func NewCandidate(ctx context.Context, kubeClient client.Client, recorder events.Recorder, clk clock.Clock, node *state.StateNode, pdbs pdb.Limits,
-	nodePoolMap map[string]*v1beta1.NodePool, nodePoolToInstanceTypesMap map[string]map[string]*cloudprovider.InstanceType, queue *orchestration.Queue) (*Candidate, error) {
+	nodePoolMap map[string]*v1beta1.NodePool, nodePoolToInstanceTypesMap map[string]map[string]*cloudprovider.InstanceType, queue *orchestration.Queue, disruptionClass string) (*Candidate, error) {
 	var err error
 	var pods []*v1.Pod
-	if pods, err = node.ValidateDisruptable(ctx, kubeClient, pdbs); err != nil {
+	if err = node.ValidateNodeDisruptable(ctx, kubeClient, pdbs); err != nil {
 		recorder.Publish(disruptionevents.Blocked(node.Node, node.NodeClaim, err.Error())...)
 		return nil, err
 	}
@@ -87,6 +88,10 @@ func NewCandidate(ctx context.Context, kubeClient client.Client, recorder events
 	if instanceType == nil {
 		recorder.Publish(disruptionevents.Blocked(node.Node, node.NodeClaim, fmt.Sprintf("Instance Type %q not found", node.Labels()[v1.LabelInstanceTypeStable]))...)
 		return nil, fmt.Errorf("instance type %q can't be resolved", node.Labels()[v1.LabelInstanceTypeStable])
+	}
+	if pods, err = node.ValidatePodsDisruptable(ctx, kubeClient, pdbs, nodePool.Spec.Disruption.TerminationGracePeriod, disruptionClass); err != nil {
+		recorder.Publish(disruptionevents.Blocked(node.Node, node.NodeClaim, err.Error())...)
+		return nil, err
 	}
 	return &Candidate{
 		StateNode:         node.DeepCopy(),

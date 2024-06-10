@@ -29,6 +29,7 @@ import (
 
 	"sigs.k8s.io/karpenter/pkg/apis/v1beta1"
 	"sigs.k8s.io/karpenter/pkg/metrics"
+	disruptionutils "sigs.k8s.io/karpenter/pkg/utils/disruption"
 )
 
 // Emptiness is a subreconciler that deletes empty candidates.
@@ -80,6 +81,10 @@ func (e *Emptiness) ComputeCommand(_ context.Context, disruptionBudgetMapping ma
 
 func (e *Emptiness) Type() string {
 	return metrics.EmptinessReason
+}
+
+func (e *Emptiness) Class() string {
+	return disruptionutils.GracefulDisruptionClass
 }
 
 func (e *Emptiness) ConsolidationType() string {

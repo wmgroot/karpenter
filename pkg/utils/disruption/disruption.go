@@ -30,6 +30,11 @@ import (
 	"sigs.k8s.io/karpenter/pkg/apis/v1beta1"
 )
 
+const (
+	GracefulDisruptionClass = "graceful" // graceful disruption always respects blocking pod PDBs and the do-not-disrupt annotation
+	EventualDisruptionClass = "eventual" // eventual disruption is bounded by a NodePool's TerminationGracePeriod, regardless of blocking pod PDBs and the do-not-disrupt annotation
+)
+
 // lifetimeRemaining calculates the fraction of node lifetime remaining in the range [0.0, 1.0].  If the ExpireAfter
 // is non-zero, we use it to scale down the disruption costs of candidates that are going to expire.  Just after creation, the
 // disruption cost is highest, and it approaches zero as the node ages towards its expiration time.

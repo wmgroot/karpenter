@@ -28,6 +28,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/karpenter/pkg/apis/v1alpha5"
@@ -66,6 +67,12 @@ var _ = Describe("Expiration", func() {
 					v1beta1.CapacityTypeLabelKey: mostExpensiveOffering.Requirements.Get(v1beta1.CapacityTypeLabelKey).Any(),
 					v1.LabelTopologyZone:         mostExpensiveOffering.Requirements.Get(v1.LabelTopologyZone).Any(),
 				},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: v1beta1.Group + "/v1beta1",
+					Kind:       "NodePool",
+					Name:       nodePool.Name,
+					UID:        uuid.NewUUID(),
+				}},
 			},
 			Status: v1beta1.NodeClaimStatus{
 				Allocatable: map[v1.ResourceName]resource.Quantity{
@@ -546,6 +553,28 @@ var _ = Describe("Expiration", func() {
 
 			// Expect to not create or delete more nodeclaims
 			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(1))
+			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(1))
+			ExpectExists(ctx, env.Client, nodeClaim)
+		})
+		It("should expire nodes that have pods with the karpenter.sh/do-not-disrupt annotation when the NodePool's TerminationGracePeriod is not nil", func() {
+			nodePool.Spec.Disruption.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
+			pod := test.Pod(test.PodOptions{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						v1beta1.DoNotDisruptAnnotationKey: "true",
+					},
+				},
+			})
+			ExpectApplied(ctx, env.Client, nodeClaim, node, nodePool, pod)
+			ExpectManualBinding(ctx, env.Client, pod, node)
+
+			// inform cluster state about nodes and nodeclaims
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, nodeStateController, nodeClaimStateController, []*v1.Node{node}, []*v1beta1.NodeClaim{nodeClaim})
+
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			// Expect to not create or delete more nodeclaims
+			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(2))
 			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(1))
 			ExpectExists(ctx, env.Client, nodeClaim)
 		})
