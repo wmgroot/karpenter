@@ -549,6 +549,28 @@ var _ = Describe("Expiration", func() {
 			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(1))
 			ExpectExists(ctx, env.Client, nodeClaim)
 		})
+		It("should expire nodes that have pods with the karpenter.sh/do-not-disrupt annotation when the NodePool's TerminationGracePeriod is not nil", func() {
+			nodePool.Spec.Disruption.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
+			pod := test.Pod(test.PodOptions{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						v1beta1.DoNotDisruptAnnotationKey: "true",
+					},
+				},
+			})
+			ExpectApplied(ctx, env.Client, nodeClaim, node, nodePool, pod)
+			ExpectManualBinding(ctx, env.Client, pod, node)
+
+			// inform cluster state about nodes and nodeclaims
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, nodeStateController, nodeClaimStateController, []*v1.Node{node}, []*v1beta1.NodeClaim{nodeClaim})
+
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			// Expect to not create or delete more nodeclaims
+			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(2))
+			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(1))
+			ExpectExists(ctx, env.Client, nodeClaim)
+		})
 		It("should continue to the next expired node if the first cannot reschedule all pods", func() {
 			pod := test.Pod(test.PodOptions{
 				ResourceRequirements: v1.ResourceRequirements{

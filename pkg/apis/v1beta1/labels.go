@@ -42,11 +42,12 @@ const (
 
 // Karpenter specific annotations
 const (
-	DoNotDisruptAnnotationKey          = Group + "/do-not-disrupt"
-	ProviderCompatabilityAnnotationKey = CompatabilityGroup + "/provider"
-	ManagedByAnnotationKey             = Group + "/managed-by"
-	NodePoolHashAnnotationKey          = Group + "/nodepool-hash"
-	NodePoolHashVersionAnnotationKey   = Group + "/nodepool-hash-version"
+	DoNotDisruptAnnotationKey             = Group + "/do-not-disrupt"
+	ProviderCompatabilityAnnotationKey    = CompatabilityGroup + "/provider"
+	ManagedByAnnotationKey                = Group + "/managed-by"
+	NodePoolHashAnnotationKey             = Group + "/nodepool-hash"
+	NodePoolHashVersionAnnotationKey      = Group + "/nodepool-hash-version"
+	NodeTerminationTimestampAnnotationKey = Group + "/node-termination-time"
 )
 
 // Karpenter specific finalizers

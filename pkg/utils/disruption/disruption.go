@@ -24,10 +24,15 @@ import (
 	"github.com/samber/lo"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/utils/clock"
-	"knative.dev/pkg/logging"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"sigs.k8s.io/karpenter/pkg/apis/v1beta1"
+)
+
+const (
+	GracefulDisruptionClass = "graceful" // graceful disruption always respects blocking pod PDBs and the do-not-disrupt annotation
+	EventualDisruptionClass = "eventual" // eventual disruption is bounded by a NodePool's TerminationGracePeriod, regardless of blocking pod PDBs and the do-not-disrupt annotation
 )
 
 // lifetimeRemaining calculates the fraction of node lifetime remaining in the range [0.0, 1.0].  If the ExpireAfter
@@ -51,8 +56,8 @@ func EvictionCost(ctx context.Context, p *v1.Pod) float64 {
 	if ok {
 		podDeletionCost, err := strconv.ParseFloat(podDeletionCostStr, 64)
 		if err != nil {
-			logging.FromContext(ctx).Errorf("parsing %s=%s from pod %s, %s",
-				v1.PodDeletionCost, podDeletionCostStr, client.ObjectKeyFromObject(p), err)
+			log.FromContext(ctx).Error(err, "parsing %s=%s from pod %s, %s",
+				v1.PodDeletionCost, podDeletionCostStr, client.ObjectKeyFromObject(p))
 		} else {
 			// the pod deletion disruptionCost is in [-2147483647, 2147483647]
 			// the min pod disruptionCost makes one pod ~ -15 pods, and the max pod disruptionCost to ~ 17 pods.

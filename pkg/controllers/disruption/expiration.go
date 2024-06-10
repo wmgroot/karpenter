@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/events"
 	"sigs.k8s.io/karpenter/pkg/metrics"
+	disruptionutils "sigs.k8s.io/karpenter/pkg/utils/disruption"
 )
 
 // Expiration is a subreconciler that deletes empty candidates.
@@ -123,6 +124,10 @@ func (e *Expiration) ComputeCommand(ctx context.Context, disruptionBudgetMapping
 
 func (e *Expiration) Type() string {
 	return metrics.ExpirationReason
+}
+
+func (e *Expiration) Class() string {
+	return disruptionutils.EventualDisruptionClass
 }
 
 func (e *Expiration) ConsolidationType() string {

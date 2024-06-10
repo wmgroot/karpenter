@@ -84,10 +84,20 @@ func (c *Controller) finalize(ctx context.Context, node *v1.Node) (reconcile.Res
 	if err := c.deleteAllNodeClaims(ctx, node); err != nil {
 		return reconcile.Result{}, fmt.Errorf("deleting nodeclaims, %w", err)
 	}
-	if err := c.terminator.Taint(ctx, node); err != nil {
-		return reconcile.Result{}, fmt.Errorf("tainting node, %w", err)
+
+	nodeTerminationTime, err := c.nodeTerminationTime(node)
+	if err != nil {
+		return reconcile.Result{}, err
 	}
-	if err := c.terminator.Drain(ctx, node); err != nil {
+	if nodeTerminationTime != nil && time.Now().After(*nodeTerminationTime) {
+		if err := c.terminator.Taint(ctx, node, v1beta1.DisruptionNonGracefulShutdown); err != nil {
+			return reconcile.Result{}, fmt.Errorf("tainting node with %s,  %w", v1.TaintNodeOutOfService, err)
+		}
+	}
+	if err := c.terminator.Taint(ctx, node, v1beta1.DisruptionNoScheduleTaint); err != nil {
+		return reconcile.Result{}, fmt.Errorf("tainting node with %s, %w", v1beta1.DisruptionTaintKey, err)
+	}
+	if err := c.terminator.Drain(ctx, node, nodeTerminationTime); err != nil {
 		if !terminator.IsNodeDrainError(err) {
 			return reconcile.Result{}, fmt.Errorf("draining node, %w", err)
 		}
@@ -105,6 +115,7 @@ func (c *Controller) finalize(ctx context.Context, node *v1.Node) (reconcile.Res
 				return reconcile.Result{}, fmt.Errorf("getting nodeclaim, %w", err)
 			}
 		}
+
 		return reconcile.Result{RequeueAfter: 1 * time.Second}, nil
 	}
 	nodeClaims, err := nodeutils.GetNodeClaims(ctx, node, c.kubeClient)
@@ -167,6 +178,18 @@ func (c *Controller) removeFinalizer(ctx context.Context, n *v1.Node) error {
 		log.FromContext(ctx).Info("deleted node")
 	}
 	return nil
+}
+
+func (c *Controller) nodeTerminationTime(node *v1.Node) (*time.Time, error) {
+	if expirationTimeString, exists := node.ObjectMeta.Annotations[v1beta1.NodeTerminationTimestampAnnotationKey]; exists {
+		expirationTime, err := time.Parse(time.RFC3339, expirationTimeString)
+		if err != nil {
+			return nil, fmt.Errorf("parsing %s annotation, %w", v1beta1.NodeTerminationTimestampAnnotationKey, err)
+		}
+		return &expirationTime, nil
+	}
+
+	return nil, nil
 }
 
 func (c *Controller) Register(_ context.Context, m manager.Manager) error {

@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
 	"sigs.k8s.io/karpenter/pkg/metrics"
 	scheduler "sigs.k8s.io/karpenter/pkg/scheduling"
+	disruptionutils "sigs.k8s.io/karpenter/pkg/utils/disruption"
 )
 
 const MultiNodeConsolidationTimeoutDuration = 1 * time.Minute
@@ -209,6 +210,10 @@ func filterOutSameType(newNodeClaim *scheduling.NodeClaim, consolidate []*Candid
 
 func (m *MultiNodeConsolidation) Type() string {
 	return metrics.ConsolidationReason
+}
+
+func (m *MultiNodeConsolidation) Class() string {
+	return disruptionutils.GracefulDisruptionClass
 }
 
 func (m *MultiNodeConsolidation) ConsolidationType() string {

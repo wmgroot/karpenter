@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/apis/v1beta1"
 	"sigs.k8s.io/karpenter/pkg/operator/options"
 	"sigs.k8s.io/karpenter/pkg/scheduling"
+	disruptionutils "sigs.k8s.io/karpenter/pkg/utils/disruption"
 	nodeutils "sigs.k8s.io/karpenter/pkg/utils/node"
 	"sigs.k8s.io/karpenter/pkg/utils/pdb"
 	podutils "sigs.k8s.io/karpenter/pkg/utils/pod"
@@ -73,14 +74,15 @@ func (n StateNodes) Pods(ctx context.Context, kubeClient client.Client) ([]*v1.P
 }
 
 // Disruptable filters StateNodes that are meet the IsDisruptable condition
-func (n StateNodes) Disruptable(ctx context.Context, clk clock.Clock, kubeClient client.Client) (StateNodes, error) {
+func (n StateNodes) Disruptable(ctx context.Context, clk clock.Clock, kubeClient client.Client, terminationGracePeriod *metav1.Duration, disruptionClass string) (StateNodes, error) {
 	pdbs, err := pdb.NewLimits(ctx, clk, kubeClient)
 	if err != nil {
 		return StateNodes{}, fmt.Errorf("constructing pdbs, %w", err)
 	}
 	n = lo.Filter(n, func(node *StateNode, _ int) bool {
-		_, err := node.ValidateDisruptable(ctx, kubeClient, pdbs)
-		return err == nil
+		nodeDisruptibleErr := node.ValidateNodeDisruptable(ctx, kubeClient)
+		_, podDisruptibleErr := node.ValidatePodsDisruptable(ctx, kubeClient, pdbs, terminationGracePeriod, disruptionClass)
+		return nodeDisruptibleErr == nil || podDisruptibleErr == nil
 	})
 	return n, nil
 }
@@ -165,28 +167,27 @@ func (in *StateNode) Pods(ctx context.Context, kubeClient client.Client) ([]*v1.
 	return nodeutils.GetPods(ctx, kubeClient, in.Node)
 }
 
-// ValidateDisruptable returns an error if the StateNode cannot be disrupted
-// This checks all associated StateNode internals, node labels, and do-not-disrupt annotations
-// on both the pod and the node.
-// ValidateDisruptable takes in a recorder to emit events on the nodeclaims when the state node is not a candidate
+// ValidateNodeDisruptable returns an error if the StateNode cannot be disrupted
+// This checks all associated StateNode internals, node labels, and do-not-disrupt annotations on the node.
+// ValidateNodeDisruptable takes in a recorder to emit events on the nodeclaims when the state node is not a candidate
 //
 //nolint:gocyclo
-func (in *StateNode) ValidateDisruptable(ctx context.Context, kubeClient client.Client, pdbs pdb.Limits) ([]*v1.Pod, error) {
+func (in *StateNode) ValidateNodeDisruptable(ctx context.Context, kubeClient client.Client) error {
 	if in.Node == nil || in.NodeClaim == nil {
-		return nil, fmt.Errorf("state node doesn't contain both a node and a nodeclaim")
+		return fmt.Errorf("state node doesn't contain both a node and a nodeclaim")
 	}
 	if !in.Initialized() {
-		return nil, fmt.Errorf("state node isn't initialized")
+		return fmt.Errorf("state node isn't initialized")
 	}
 	if in.MarkedForDeletion() {
-		return nil, fmt.Errorf("state node is marked for deletion")
+		return fmt.Errorf("state node is marked for deletion")
 	}
 	// skip the node if it is nominated by a recent provisioning pass to be the target of a pending pod.
 	if in.Nominated() {
-		return nil, fmt.Errorf("state node is nominated for a pending pod")
+		return fmt.Errorf("state node is nominated for a pending pod")
 	}
 	if _, ok := in.Annotations()[v1beta1.DoNotDisruptAnnotationKey]; ok {
-		return nil, fmt.Errorf("disruption is blocked through the %q annotation", v1beta1.DoNotDisruptAnnotationKey)
+		return fmt.Errorf("disruption is blocked through the %q annotation", v1beta1.DoNotDisruptAnnotationKey)
 	}
 	// check whether the node has all the labels we need
 	for _, label := range []string{
@@ -196,22 +197,34 @@ func (in *StateNode) ValidateDisruptable(ctx context.Context, kubeClient client.
 		v1beta1.NodePoolLabelKey,
 	} {
 		if _, ok := in.Labels()[label]; !ok {
-			return nil, fmt.Errorf("state node doesn't have required label %q", label)
+			return fmt.Errorf("state node doesn't have required label %q", label)
 		}
 	}
+	return nil
+}
+
+// ValidatePodDisruptable returns an error if the StateNode contains a pod that cannot be disrupted
+// This checks associated PDBs and do-not-disrupt annotations for each pod on the node.
+// ValidatePodDisruptable takes in a recorder to emit events on the nodeclaims when the state node is not a candidate
+//
+//nolint:gocyclo
+func (in *StateNode) ValidatePodsDisruptable(ctx context.Context, kubeClient client.Client, pdbs pdb.Limits, terminationGracePeriod *metav1.Duration, disruptionClass string) ([]*v1.Pod, error) {
 	pods, err := in.Pods(ctx, kubeClient)
 	if err != nil {
 		return nil, fmt.Errorf("getting pods from state node, %w", err)
 	}
-	for _, po := range pods {
-		// We only consider pods that are actively running for "karpenter.sh/do-not-disrupt"
-		// This means that we will allow Mirror Pods and DaemonSets to block disruption using this annotation
-		if !podutils.IsDisruptable(po) {
-			return nil, fmt.Errorf(`pod %q has "karpenter.sh/do-not-disrupt" annotation`, client.ObjectKeyFromObject(po))
+	// if the disruption class is graceful, avoid disruption of pods with blocking PDBs and do-not-disrupt annotations on nodes with a terminationGracePeriod
+	if terminationGracePeriod == nil || disruptionClass == disruptionutils.GracefulDisruptionClass {
+		for _, po := range pods {
+			// We only consider pods that are actively running for "karpenter.sh/do-not-disrupt"
+			// This means that we will allow Mirror Pods and DaemonSets to block disruption using this annotation
+			if !podutils.IsDisruptable(po) {
+				return nil, fmt.Errorf(`pod %q has "karpenter.sh/do-not-disrupt" annotation`, client.ObjectKeyFromObject(po))
+			}
 		}
-	}
-	if pdbKey, ok := pdbs.CanEvictPods(pods); !ok {
-		return nil, fmt.Errorf("pdb %q prevents pod evictions", pdbKey)
+		if pdbKey, ok := pdbs.CanEvictPods(pods); !ok {
+			return nil, fmt.Errorf("pdb %q prevents pod evictions", pdbKey)
+		}
 	}
 
 	return pods, nil

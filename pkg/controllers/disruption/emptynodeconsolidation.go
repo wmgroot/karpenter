@@ -26,6 +26,7 @@ import (
 
 	"sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
 	"sigs.k8s.io/karpenter/pkg/metrics"
+	disruptionutils "sigs.k8s.io/karpenter/pkg/utils/disruption"
 )
 
 // EmptyNodeConsolidation is the consolidation controller that performs multi-nodeclaim consolidation of entirely empty nodes
@@ -109,6 +110,10 @@ func (c *EmptyNodeConsolidation) ComputeCommand(ctx context.Context, disruptionB
 
 func (c *EmptyNodeConsolidation) Type() string {
 	return metrics.ConsolidationReason
+}
+
+func (c *EmptyNodeConsolidation) Class() string {
+	return disruptionutils.GracefulDisruptionClass
 }
 
 func (c *EmptyNodeConsolidation) ConsolidationType() string {
