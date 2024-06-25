@@ -168,7 +168,7 @@ var _ = Describe("Eviction/Queue", func() {
 
 			Expect(terminatorInstance.DeleteExpiringPods(ctx, []*v1.Pod{pod}, nil)).To(Succeed())
 			ExpectExists(ctx, env.Client, pod)
-			Expect(recorder.Calls("Deleted")).To(Equal(0))
+			Expect(recorder.Calls("Disrupted")).To(Equal(0))
 		})
 		It("should not delete a pod with terminationGracePeriodSeconds still remaining before nodeTerminationTime", func() {
 			pod.Spec.TerminationGracePeriodSeconds = lo.ToPtr[int64](60)
@@ -177,7 +177,7 @@ var _ = Describe("Eviction/Queue", func() {
 			nodeTerminationTime := time.Now().Add(time.Minute * 5)
 			Expect(terminatorInstance.DeleteExpiringPods(ctx, []*v1.Pod{pod}, &nodeTerminationTime)).To(Succeed())
 			ExpectExists(ctx, env.Client, pod)
-			Expect(recorder.Calls("Deleted")).To(Equal(0))
+			Expect(recorder.Calls("Disrupted")).To(Equal(0))
 		})
 		It("should delete a pod with less than terminationGracePeriodSeconds remaining before nodeTerminationTime", func() {
 			pod.Spec.TerminationGracePeriodSeconds = lo.ToPtr[int64](120)
@@ -186,7 +186,7 @@ var _ = Describe("Eviction/Queue", func() {
 			nodeTerminationTime := time.Now().Add(time.Minute * 1)
 			Expect(terminatorInstance.DeleteExpiringPods(ctx, []*v1.Pod{pod}, &nodeTerminationTime)).To(Succeed())
 			ExpectNotFound(ctx, env.Client, pod)
-			Expect(recorder.Calls("Deleted")).To(Equal(1))
+			Expect(recorder.Calls("Disrupted")).To(Equal(1))
 		})
 	})
 })

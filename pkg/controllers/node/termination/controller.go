@@ -89,11 +89,6 @@ func (c *Controller) finalize(ctx context.Context, node *v1.Node) (reconcile.Res
 	if err != nil {
 		return reconcile.Result{}, err
 	}
-	if nodeTerminationTime != nil && time.Now().After(*nodeTerminationTime) {
-		if err := c.terminator.Taint(ctx, node, v1beta1.DisruptionNonGracefulShutdown); err != nil {
-			return reconcile.Result{}, fmt.Errorf("tainting node with %s,  %w", v1.TaintNodeOutOfService, err)
-		}
-	}
 	if err := c.terminator.Taint(ctx, node, v1beta1.DisruptionNoScheduleTaint); err != nil {
 		return reconcile.Result{}, fmt.Errorf("tainting node with %s, %w", v1beta1.DisruptionTaintKey, err)
 	}

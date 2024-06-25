@@ -93,7 +93,7 @@ func (c *Controller) finalize(ctx context.Context, nodeClaim *v1beta1.NodeClaim)
 		return reconcile.Result{}, err
 	}
 	for _, node := range nodes {
-		err = c.ensureTerminationGracePeriodExpirationAnnotation(ctx, node, nodeClaim)
+		err = c.ensureTerminationGracePeriodTerminationTimeAnnotation(ctx, node, nodeClaim)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
@@ -151,7 +151,7 @@ func (c *Controller) finalize(ctx context.Context, nodeClaim *v1beta1.NodeClaim)
 	return reconcile.Result{}, nil
 }
 
-func (c *Controller) ensureTerminationGracePeriodExpirationAnnotation(ctx context.Context, node *v1.Node, nodeClaim *v1beta1.NodeClaim) error {
+func (c *Controller) ensureTerminationGracePeriodTerminationTimeAnnotation(ctx context.Context, node *v1.Node, nodeClaim *v1beta1.NodeClaim) error {
 	// if the expiration annotation is already set, we don't need to do anything
 	if _, exists := node.ObjectMeta.Annotations[v1beta1.NodeTerminationTimestampAnnotationKey]; exists {
 		return nil
@@ -163,15 +163,16 @@ func (c *Controller) ensureTerminationGracePeriodExpirationAnnotation(ctx contex
 		return fmt.Errorf("getting nodepool for nodeclaim, %w", err)
 	}
 
+	// Unlike Pods, the default and un-changeable setting of the a NodeClaim's terminationGracePeriodSeconds is 0, meaning the DeletionTimestamp is always equal to the time the NodeClaim is deleted.
 	if nodePool.Spec.Disruption.TerminationGracePeriod != nil && !nodeClaim.ObjectMeta.DeletionTimestamp.IsZero() {
-		expirationTimeString := nodeClaim.DeletionTimestamp.Time.Add(nodePool.Spec.Disruption.TerminationGracePeriod.Duration).Format(time.RFC3339)
-		return c.annotateTerminationGracePeriodTerminationTime(ctx, node, expirationTimeString)
+		terminationTimeString := nodeClaim.DeletionTimestamp.Time.Add(nodePool.Spec.Disruption.TerminationGracePeriod.Duration).Format(time.RFC3339)
+		return c.annotateTerminationGracePeriodTerminationTime(ctx, node, nodeClaim, terminationTimeString)
 	}
 
 	return nil
 }
 
-func (c *Controller) annotateTerminationGracePeriodTerminationTime(ctx context.Context, node *v1.Node, terminationTime string) error {
+func (c *Controller) annotateTerminationGracePeriodTerminationTime(ctx context.Context, node *v1.Node, nodeClaim *v1beta1.NodeClaim, terminationTime string) error {
 	stored := node.DeepCopy()
 	node.ObjectMeta.Annotations = lo.Assign(node.ObjectMeta.Annotations, map[string]string{v1beta1.NodeTerminationTimestampAnnotationKey: terminationTime})
 
@@ -179,7 +180,8 @@ func (c *Controller) annotateTerminationGracePeriodTerminationTime(ctx context.C
 		return client.IgnoreNotFound(fmt.Errorf("patching nodeclaim, %w", err))
 	}
 	log.FromContext(ctx).WithValues(v1beta1.NodeTerminationTimestampAnnotationKey, terminationTime).Info("annotated node")
-	c.recorder.Publish(terminatorevents.NodeTerminationGracePeriod(node, terminationTime))
+	c.recorder.Publish(terminatorevents.NodeTerminationGracePeriodExpiring(node, terminationTime))
+	c.recorder.Publish(terminatorevents.NodeClaimTerminationGracePeriodExpiring(nodeClaim, terminationTime))
 
 	return nil
 }

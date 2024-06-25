@@ -151,17 +151,17 @@ func (t *Terminator) EvictInOrder(pods ...[]*v1.Pod) {
 	}
 }
 
-func (t *Terminator) DeleteExpiringPods(ctx context.Context, pods []*v1.Pod, nodeGracePeriodExpirationTime *time.Time) error {
+func (t *Terminator) DeleteExpiringPods(ctx context.Context, pods []*v1.Pod, nodeGracePeriodTerminationTime *time.Time) error {
 	for _, pod := range pods {
 		// check if the node has an expiration time and the pod needs to be deleted
-		deleteTime := t.podDeleteTimeWithGracePeriod(nodeGracePeriodExpirationTime, pod)
+		deleteTime := t.podDeleteTimeWithGracePeriod(nodeGracePeriodTerminationTime, pod)
 		if deleteTime != nil && time.Now().After(*deleteTime) {
-			t.recorder.Publish(terminatorevents.DeletePod(pod))
-
 			// delete pod proactively to give as much of its terminationGracePeriodSeconds as possible for deletion
 			// ensure that we clamp the maximum pod terminationGracePeriodSeconds to the node's remaining expiration time in the delete command
+			gracePeriodSeconds := lo.ToPtr(int64(time.Until(*nodeGracePeriodTerminationTime).Seconds()))
+			t.recorder.Publish(terminatorevents.DisruptPodDelete(pod, gracePeriodSeconds, nodeGracePeriodTerminationTime))
 			opts := &client.DeleteOptions{
-				GracePeriodSeconds: lo.ToPtr(int64(time.Second * time.Until(*nodeGracePeriodExpirationTime))),
+				GracePeriodSeconds: gracePeriodSeconds,
 			}
 			if err := t.kubeClient.Delete(ctx, pod, opts); err != nil && !apierrors.IsNotFound(err) { // ignore 404, not a problem
 				return err // otherwise, bubble up the error
@@ -170,8 +170,9 @@ func (t *Terminator) DeleteExpiringPods(ctx context.Context, pods []*v1.Pod, nod
 				"namespace", pod.Namespace,
 				"name", pod.Name,
 				"pod.terminationGracePeriodSeconds", *pod.Spec.TerminationGracePeriodSeconds,
-				"nodeclaim.expirationTime", nodeGracePeriodExpirationTime,
-			).Info("deleted pod")
+				"delete.gracePeriodSeconds", *gracePeriodSeconds,
+				"nodeclaim.expirationTime", *nodeGracePeriodTerminationTime,
+			).Info("deleting pod")
 		}
 	}
 	return nil

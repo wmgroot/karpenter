@@ -39,7 +39,6 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/uuid"
 
@@ -715,96 +714,6 @@ var _ = Describe("Termination", func() {
 				g.Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(pod), pod)).To(Succeed())
 				g.Expect(pod.DeletionTimestamp.IsZero()).To(BeTrue())
 			}, ReconcilerPropagationTime, RequestInterval).Should(Succeed())
-		})
-		It("should not taint a node that has no expiration annotations", func() {
-			minAvailable := intstr.FromInt(1)
-			labelSelector := map[string]string{test.RandomName(): test.RandomName()}
-			pdb := test.PodDisruptionBudget(test.PDBOptions{
-				Labels: labelSelector,
-				// Don't let any pod evict
-				MinAvailable: &minAvailable,
-			})
-			podNoEvict := test.Pod(test.PodOptions{
-				NodeName: node.Name,
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:          labelSelector,
-					OwnerReferences: defaultOwnerRefs,
-				},
-				Phase: v1.PodRunning,
-			})
-
-			node.ObjectMeta.Annotations = map[string]string{}
-			nodePool.Spec.Disruption.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
-			ExpectApplied(ctx, env.Client, node, nodeClaim, nodePool, podNoEvict, pdb)
-
-			Expect(env.Client.Delete(ctx, node)).To(Succeed())
-			ExpectObjectReconciled(ctx, env.Client, terminationController, node)
-			ExpectSingletonReconciled(ctx, queue)
-			ExpectNodeExists(ctx, env.Client, node.Name)
-
-			Expect(env.Client.Get(ctx, types.NamespacedName{Name: node.Name}, node)).To(Succeed())
-			Expect(node.Spec.Taints).ToNot(ContainElement(v1beta1.DisruptionNonGracefulShutdown))
-		})
-		It("should not taint a node that has not yet exceeded it's terminationGracePeriod", func() {
-			minAvailable := intstr.FromInt(1)
-			labelSelector := map[string]string{test.RandomName(): test.RandomName()}
-			pdb := test.PodDisruptionBudget(test.PDBOptions{
-				Labels: labelSelector,
-				// Don't let any pod evict
-				MinAvailable: &minAvailable,
-			})
-			podNoEvict := test.Pod(test.PodOptions{
-				NodeName: node.Name,
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:          labelSelector,
-					OwnerReferences: defaultOwnerRefs,
-				},
-				Phase: v1.PodRunning,
-			})
-
-			node.ObjectMeta.Annotations = map[string]string{
-				v1beta1.NodeTerminationTimestampAnnotationKey: time.Now().Add(time.Minute * 5).Format(time.RFC3339),
-			}
-			nodePool.Spec.Disruption.TerminationGracePeriod = &metav1.Duration{Duration: time.Second * 300}
-			ExpectApplied(ctx, env.Client, node, nodeClaim, nodePool, podNoEvict, pdb)
-
-			Expect(env.Client.Delete(ctx, node)).To(Succeed())
-			ExpectObjectReconciled(ctx, env.Client, terminationController, node)
-			ExpectSingletonReconciled(ctx, queue)
-			ExpectNodeExists(ctx, env.Client, node.Name)
-			ExpectPodExists(ctx, env.Client, podNoEvict.Name, podNoEvict.Namespace)
-			Expect(node.Spec.Taints).ToNot(ContainElement(v1beta1.DisruptionNonGracefulShutdown))
-		})
-		It("should taint a node that has exceeded it's terminationGracePeriod", func() {
-			minAvailable := intstr.FromInt(1)
-			labelSelector := map[string]string{test.RandomName(): test.RandomName()}
-			pdb := test.PodDisruptionBudget(test.PDBOptions{
-				Labels: labelSelector,
-				// Don't let any pod evict
-				MinAvailable: &minAvailable,
-			})
-			podNoEvict := test.Pod(test.PodOptions{
-				NodeName: node.Name,
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:          labelSelector,
-					OwnerReferences: defaultOwnerRefs,
-				},
-				Phase: v1.PodRunning,
-			})
-
-			node.ObjectMeta.Annotations = map[string]string{
-				v1beta1.NodeTerminationTimestampAnnotationKey: time.Now().Add(time.Second * -10).Format(time.RFC3339),
-			}
-			nodePool.Spec.Disruption.TerminationGracePeriod = &metav1.Duration{Duration: time.Minute * 1}
-			ExpectApplied(ctx, env.Client, node, nodeClaim, nodePool, podNoEvict, pdb)
-
-			Expect(env.Client.Delete(ctx, node)).To(Succeed())
-			ExpectObjectReconciled(ctx, env.Client, terminationController, node)
-			ExpectSingletonReconciled(ctx, queue)
-			ExpectNodeExists(ctx, env.Client, node.Name)
-
-			Expect(env.Client.Get(ctx, types.NamespacedName{Name: node.Name}, node)).To(Succeed())
-			Expect(node.Spec.Taints).To(ContainElement(v1beta1.DisruptionNonGracefulShutdown))
 		})
 		It("should preemptively delete pods to satisfy their terminationGracePeriodSeconds", func() {
 			pod := test.Pod(test.PodOptions{
