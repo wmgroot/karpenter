@@ -30,6 +30,7 @@ const (
 	ConditionTypeDrifted              = "Drifted"
 	ConditionTypeInstanceTerminating  = "InstanceTerminating"
 	ConditionTypeConsistentStateFound = "ConsistentStateFound"
+	ConditionTypeDisruptionCandidate  = "DisruptionCandidate"
 )
 
 // NodeClaimStatus defines the observed state of NodeClaim

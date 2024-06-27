@@ -220,9 +220,22 @@ func (c *Controller) executeCommand(ctx context.Context, m Method, cmd Command, 
 	// We have the new NodeClaims created at the API server so mark the old NodeClaims for deletion
 	c.cluster.MarkForDeletion(providerIDs...)
 
+	// Set the status of the nodeclaims to reflect that they are disruption candidates
+	err = multierr.Combine(lo.Map(cmd.candidates, func(candidate *Candidate, _ int) error {
+		m.Class()
+		candidate.NodeClaim.StatusConditions().SetTrueWithReason(v1.ConditionTypeDisruptionCandidate, v1.ConditionTypeDisruptionCandidate, disruptionReason(m, candidate.NodeClaim))
+		return c.kubeClient.Status().Update(ctx, candidate.NodeClaim)
+	})...)
+	if err != nil {
+		return multierr.Append(fmt.Errorf("updating nodeclaim status: %w", err), state.RequireNoScheduleTaint(ctx, c.kubeClient, false, stateNodes...))
+	}
+
 	if err := c.queue.Add(orchestration.NewCommand(nodeClaimNames,
 		lo.Map(cmd.candidates, func(c *Candidate, _ int) *state.StateNode { return c.StateNode }), commandID, m.Reason(), m.ConsolidationType())); err != nil {
 		c.cluster.UnmarkForDeletion(providerIDs...)
+		err = multierr.Combine(err, multierr.Combine(lo.Map(cmd.candidates, func(candidate *Candidate, _ int) error {
+			return multierr.Append(candidate.NodeClaim.StatusConditions().Clear(v1.ConditionTypeDisruptionCandidate), c.kubeClient.Status().Update(ctx, candidate.NodeClaim))
+		})...))
 		return fmt.Errorf("adding command to queue (command-id: %s), %w", commandID, multierr.Append(err, state.RequireNoScheduleTaint(ctx, c.kubeClient, false, stateNodes...)))
 	}
 
@@ -233,6 +246,10 @@ func (c *Controller) executeCommand(ctx context.Context, m Method, cmd Command, 
 		consolidationTypeLabel: m.ConsolidationType(),
 	}).Inc()
 	return nil
+}
+
+func disruptionReason(m Method, nodeClaim *v1.NodeClaim) string {
+	return fmt.Sprintf("node %s/%s was disrupted, reason: %s, consolidationType: %s", nodeClaim.Name, nodeClaim.Status.NodeName, m.Reason(), m.ConsolidationType())
 }
 
 // createReplacementNodeClaims creates replacement NodeClaims
