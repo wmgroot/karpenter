@@ -86,7 +86,7 @@ func NewController(clk clock.Clock, kubeClient client.Client, provisioner *provi
 			// Attempt to identify multiple NodeClaims that we can consolidate simultaneously to reduce pod churn
 			NewMultiNodeConsolidation(c),
 			// And finally fall back our single NodeClaim consolidation to further reduce cluster cost.
-			NewSingleNodeConsolidation(c),
+			//NewSingleNodeConsolidation(c),
 		},
 	}
 }

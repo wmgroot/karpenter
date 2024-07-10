@@ -23,6 +23,10 @@ import (
 	"sync"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"sigs.k8s.io/karpenter/pkg/utils/pdb"
+
 	"k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -126,7 +130,21 @@ func (v *Validation) ValidateCandidates(ctx context.Context, candidates ...*Cand
 	validatedCandidates = mapCandidates(candidates, validatedCandidates)
 	// If we filtered out any candidates, return nil as some NodeClaims in the consolidation decision have changed.
 	if len(validatedCandidates) != len(candidates) {
-		return nil, NewValidationError(fmt.Errorf("%d candidates are no longer valid", len(candidates)-len(validatedCandidates)))
+		nodePoolMap, nodePoolToInstanceTypesMap, err := BuildNodePoolMap(ctx, v.kubeClient, v.cloudProvider)
+		if err == nil {
+			pdbs, err := pdb.NewLimits(ctx, v.clock, v.kubeClient)
+			if err == nil {
+				for _, candidate := range candidates {
+					nc, e := NewCandidate(ctx, v.kubeClient, v.recorder, v.clock, candidate.StateNode, pdbs, nodePoolMap, nodePoolToInstanceTypesMap, v.queue, GracefulDisruptionClass)
+					if e != nil {
+						log.FromContext(ctx).V(1).Info(fmt.Sprintf("new candidate error: %s", e.Error()))
+					} else {
+						log.FromContext(ctx).V(1).Info(fmt.Sprintf("new candidate succeeded: %#v", *nc))
+					}
+				}
+			}
+		}
+		return nil, NewValidationError(fmt.Errorf("%d candidates are no longer valid (%#v - %#v)", len(candidates)-len(validatedCandidates), candidates, validatedCandidates))
 	}
 	disruptionBudgetMapping, err := BuildDisruptionBudgets(ctx, v.cluster, v.clock, v.kubeClient, v.recorder)
 	if err != nil {
@@ -179,18 +197,18 @@ func (v *Validation) ValidateCommand(ctx context.Context, cmd Command, candidate
 		}
 		// if it produced no new NodeClaims, but we were expecting one we should re-simulate as there is likely a better
 		// consolidation option now
-		return NewValidationError(fmt.Errorf("scheduling simulation produced new results"))
+		return NewValidationError(fmt.Errorf("scheduling simulation produced new results: no new node claims"))
 	}
 
 	// we need more than one replacement node which is never valid currently (all of our node replacement is m->1, never m->n)
 	if len(results.NewNodeClaims) > 1 {
-		return NewValidationError(fmt.Errorf("scheduling simulation produced new results"))
+		return NewValidationError(fmt.Errorf("scheduling simulation produced new results: more than one new node claim"))
 	}
 
 	// we now know that scheduling simulation wants to create one new node
 	if len(cmd.replacements) == 0 {
 		// but we weren't expecting any new NodeClaims, so this is invalid
-		return NewValidationError(fmt.Errorf("scheduling simulation produced new results"))
+		return NewValidationError(fmt.Errorf("scheduling simulation produced new results: no replacements expected"))
 	}
 
 	// We know that the scheduling simulation wants to create a new node and that the command we are verifying wants
@@ -205,7 +223,7 @@ func (v *Validation) ValidateCommand(ctx context.Context, cmd Command, candidate
 	// now says that we need to launch a 4xlarge. It's still launching the correct number of NodeClaims, but it's just
 	// as expensive or possibly more so we shouldn't validate.
 	if !instanceTypesAreSubset(cmd.replacements[0].InstanceTypeOptions, results.NewNodeClaims[0].InstanceTypeOptions) {
-		return NewValidationError(fmt.Errorf("scheduling simulation produced new results"))
+		return NewValidationError(fmt.Errorf("scheduling simulation produced new results: instance already in subset"))
 	}
 
 	// Now we know:
