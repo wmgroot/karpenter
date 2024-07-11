@@ -91,6 +91,13 @@ func (c *consolidation) ShouldDisrupt(_ context.Context, cn *Candidate) bool {
 	if cn.nodePool.Spec.Disruption.ConsolidationPolicy != v1.ConsolidationPolicyWhenUnderutilized {
 		return false
 	}
+	if cn.nodePool.Spec.Disruption.ConsolidateAfter != nil && cn.nodePool.Spec.Disruption.ConsolidateAfter.Duration != nil {
+		consolidationAvailableTime := cn.NodeClaim.CreationTimestamp.Add(*cn.nodePool.Spec.Disruption.ConsolidateAfter.Duration)
+		if time.Now().Before(consolidationAvailableTime) {
+			c.recorder.Publish(disruptionevents.Unconsolidatable(cn.Node, cn.NodeClaim, fmt.Sprintf("Node %q cannot be consolidated until %v, consolidateAfter == %v", cn.Node.Name, consolidationAvailableTime, *cn.nodePool.Spec.Disruption.ConsolidateAfter.Duration))...)
+			return false
+		}
+	}
 	if cn.nodePool.Spec.Disruption.ConsolidateAfter != nil && cn.nodePool.Spec.Disruption.ConsolidateAfter.Duration == nil {
 		c.recorder.Publish(disruptionevents.Unconsolidatable(cn.Node, cn.NodeClaim, fmt.Sprintf("NodePool %q has consolidation disabled", cn.nodePool.Name))...)
 		return false
