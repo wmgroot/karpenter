@@ -203,7 +203,10 @@ func NewOperator() (context.Context, *Operator) {
 	}), "failed to setup nodeclaim provider id indexer")
 	lo.Must0(mgr.GetFieldIndexer().IndexField(ctx, &v1.NodeClaim{}, "spec.nodeClassRef.group", func(o client.Object) []string {
 		return []string{o.(*v1.NodeClaim).Spec.NodeClassRef.Group}
-	}), "failed to setup nodeclaim nodeclassref apiversion indexer")
+	}), "failed to setup nodeclaim nodeclassref group indexer")
+	lo.Must0(mgr.GetFieldIndexer().IndexField(ctx, &v1.NodeClaim{}, "status.nodeName", func(o client.Object) []string {
+		return []string{o.(*v1.NodeClaim).Status.NodeName}
+	}), "failed to setup nodeclaim nodeName indexer")
 	lo.Must0(mgr.GetFieldIndexer().IndexField(ctx, &v1.NodeClaim{}, "spec.nodeClassRef.kind", func(o client.Object) []string {
 		return []string{o.(*v1.NodeClaim).Spec.NodeClassRef.Kind}
 	}), "failed to setup nodeclaim nodeclassref kind indexer")

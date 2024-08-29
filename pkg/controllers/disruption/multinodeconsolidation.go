@@ -43,66 +43,92 @@ func NewMultiNodeConsolidation(consolidation consolidation) *MultiNodeConsolidat
 	return &MultiNodeConsolidation{consolidation: consolidation}
 }
 
+// nolint:gocyclo
 func (m *MultiNodeConsolidation) ComputeCommand(ctx context.Context, disruptionBudgetMapping map[string]map[v1.DisruptionReason]int, candidates ...*Candidate) (Command, scheduling.Results, error) {
 	if m.IsConsolidated() {
 		return Command{}, scheduling.Results{}, nil
 	}
 	candidates = m.sortCandidates(candidates)
-
-	// In order, filter out all candidates that would violate the budget.
-	// Since multi-node consolidation relies on the ordering of
-	// these candidates, and does computation in batches of these nodes by
-	// simulateScheduling(nodes[0, n]), doing a binary search on n to find
-	// the optimal consolidation command, this pre-filters out nodes that
-	// would have violated the budget anyway, preserving the ordering
-	// and only considering a number of nodes that can be disrupted.
-	disruptableCandidates := make([]*Candidate, 0, len(candidates))
-	constrainedByBudgets := false
+	nodePoolsByArch := make(map[string]map[string]int)
 	for _, candidate := range candidates {
-		// If there's disruptions allowed for the candidate's nodepool,
-		// add it to the list of candidates, and decrement the budget.
-		if disruptionBudgetMapping[candidate.nodePool.Name][v1.DisruptionReasonUnderutilized] == 0 {
-			constrainedByBudgets = true
-			continue
+		architectures := nodePoolsByArch[candidate.nodePool.Name]
+		if architectures == nil {
+			architectures = make(map[string]int)
+			nodePoolsByArch[candidate.nodePool.Name] = architectures
 		}
-		// Filter out empty candidates. If there was an empty node that wasn't consolidated before this, we should
-		// assume that it was due to budgets. If we don't filter out budgets, users who set a budget for `empty`
-		// can find their nodes disrupted here.
-		if len(candidate.reschedulablePods) == 0 {
-			continue
+		if architectures[candidate.Node.Status.NodeInfo.Architecture] == 0 {
+			architectures[candidate.Node.Status.NodeInfo.Architecture] = 1
+		} else {
+			architectures[candidate.Node.Status.NodeInfo.Architecture] += 1
 		}
-		// set constrainedByBudgets to true if any node was a candidate but was constrained by a budget
-		disruptableCandidates = append(disruptableCandidates, candidate)
-		disruptionBudgetMapping[candidate.nodePool.Name][v1.DisruptionReasonUnderutilized]--
 	}
 
-	// Only consider a maximum batch of 100 NodeClaims to save on computation.
-	// This could be further configurable in the future.
-	maxParallel := lo.Clamp(len(disruptableCandidates), 0, 100)
+	for nodepoolName, architectures := range nodePoolsByArch {
+		for architecture, nodeCount := range architectures {
 
-	cmd, results, err := m.firstNConsolidationOption(ctx, disruptableCandidates, maxParallel)
-	if err != nil {
-		return Command{}, scheduling.Results{}, err
-	}
+			// In order, filter out all candidates that would violate the budget.
+			// Since multi-node consolidation relies on the ordering of
+			// these candidates, and does computation in batches of these nodes by
+			// simulateScheduling(nodes[0, n]), doing a binary search on n to find
+			// the optimal consolidation command, this pre-filters out nodes that
+			// would have violated the budget anyway, preserving the ordering
+			// and only considering a number of nodes that can be disrupted.
+			disruptableCandidates := make([]*Candidate, 0, nodeCount)
+			constrainedByBudgets := false
+			for _, candidate := range candidates {
+				if candidate.nodePool.Name != nodepoolName || candidate.Node.Status.NodeInfo.Architecture != architecture {
+					continue
+				}
+				// If there's disruptions allowed for the candidate's nodepool,
+				// add it to the list of candidates, and decrement the budget.
+				if disruptionBudgetMapping[candidate.nodePool.Name][m.Reason()] == 0 {
+					constrainedByBudgets = true
+					continue
+				}
+				// Filter out empty candidates. If there was an empty node that wasn't consolidated before this, we should
+				// assume that it was due to budgets. If we don't filter out budgets, users who set a budget for `empty`
+				// can find their nodes disrupted here.
+				if len(candidate.reschedulablePods) == 0 {
+					continue
+				}
+				// set constrainedByBudgets to true if any node was a candidate but was constrained by a budget
+				disruptableCandidates = append(disruptableCandidates, candidate)
+				disruptionBudgetMapping[candidate.nodePool.Name][v1.DisruptionReasonUnderutilized]--
+			}
 
-	if cmd.Decision() == NoOpDecision {
-		// if there are no candidates because of a budget, don't mark
-		// as consolidated, as it's possible it should be consolidatable
-		// the next time we try to disrupt.
-		if !constrainedByBudgets {
-			m.markConsolidated()
+			// Only consider a maximum batch of 100 NodeClaims to save on computation.
+			// This could be further configurable in the future.
+			maxParallel := lo.Clamp(len(disruptableCandidates), 0, 100)
+
+			cmd, results, err := m.firstNConsolidationOption(ctx, disruptableCandidates, maxParallel)
+			if err != nil {
+				return Command{}, scheduling.Results{}, err
+			}
+
+			if cmd.Decision() == NoOpDecision {
+				// if there are no candidates because of a budget, don't mark
+				// as consolidated, as it's possible it should be consolidatable
+				// the next time we try to disrupt.
+				if !constrainedByBudgets {
+					m.markConsolidated()
+				}
+				log.FromContext(ctx).V(1).Info(fmt.Sprintf("abandoning multi-node consolidation attempt due no candidates (%s/%s) (maxParallel: %d, constrainedByBudgets: %v)", nodepoolName, architecture, maxParallel, constrainedByBudgets))
+				continue
+			}
+
+			if err := NewValidation(m.clock, m.cluster, m.kubeClient, m.provisioner, m.cloudProvider, m.recorder, m.queue, m.Reason()).IsValid(ctx, cmd, consolidationTTL); err != nil {
+				if IsValidationError(err) {
+					log.FromContext(ctx).V(1).Info(fmt.Sprintf("abandoning multi-node consolidation attempt due to pod churn, command is no longer valid, %s: %s", cmd, err.Error()))
+					return Command{}, scheduling.Results{}, nil
+				}
+				return Command{}, scheduling.Results{}, fmt.Errorf("validating consolidation, %w", err)
+			}
+			log.FromContext(ctx).V(1).Info(fmt.Sprintf("multi-node consolidation cmd success, new nodes: %d, replaced candidates: %d, ", len(cmd.replacements), len(cmd.candidates)))
+			return cmd, results, nil
 		}
-		return cmd, scheduling.Results{}, nil
 	}
-
-	if err := NewValidation(m.clock, m.cluster, m.kubeClient, m.provisioner, m.cloudProvider, m.recorder, m.queue, v1.DisruptionReasonUnderutilized).IsValid(ctx, cmd, consolidationTTL); err != nil {
-		if IsValidationError(err) {
-			log.FromContext(ctx).V(1).Info(fmt.Sprintf("abandoning multi-node consolidation attempt due to pod churn, command is no longer valid, %s", cmd))
-			return Command{}, scheduling.Results{}, nil
-		}
-		return Command{}, scheduling.Results{}, fmt.Errorf("validating consolidation, %w", err)
-	}
-	return cmd, results, nil
+	log.FromContext(ctx).V(1).Info("abandoning multi-node consolidation attempt, no results")
+	return Command{}, scheduling.Results{}, nil
 }
 
 // firstNConsolidationOption looks at the first N NodeClaims to determine if they can all be consolidated at once.  The

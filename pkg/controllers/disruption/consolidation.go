@@ -23,6 +23,8 @@ import (
 	"sort"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/clock"
@@ -123,6 +125,7 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 		}
 		return Command{}, pscheduling.Results{}, err
 	}
+	log.FromContext(ctx).V(1).Info(fmt.Sprintf("computeConsolidation len candidates: %d, new node claims: %d", len(candidates), len(results.NewNodeClaims)))
 
 	// if not all of the pods were scheduled, we can't do anything
 	if !results.AllNonPendingPodsScheduled() {
@@ -130,6 +133,7 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 		if len(candidates) == 1 {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, results.NonPendingPodSchedulingErrors())...)
 		}
+		log.FromContext(ctx).V(1).Info(fmt.Sprintf("computeConsolidation abandoned, not all pods scheduled: %s - len candidates: %d, new node claims: %d", results.NonPendingPodSchedulingErrors(), len(candidates), len(results.NewNodeClaims)))
 		return Command{}, pscheduling.Results{}, nil
 	}
 
@@ -142,10 +146,11 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 
 	// we're not going to turn a single node into multiple candidates
 	if len(results.NewNodeClaims) != 1 {
-		if len(candidates) == 1 {
+		if len(candidates) <= len(results.NewNodeClaims) {
+			log.FromContext(ctx).V(1).Info(fmt.Sprintf("computeConsolidation abandoned, new nodes >= existing candidates %d, new node claims: %d", len(candidates), len(results.NewNodeClaims)))
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't remove without creating %d candidates", len(results.NewNodeClaims)))...)
+			return Command{}, pscheduling.Results{}, nil
 		}
-		return Command{}, pscheduling.Results{}, nil
 	}
 
 	// get the current node price based on the offering
@@ -168,6 +173,7 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 
 	if allExistingAreSpot &&
 		results.NewNodeClaims[0].Requirements.Get(v1.CapacityTypeLabelKey).Has(v1.CapacityTypeSpot) {
+		log.FromContext(ctx).V(1).Info(fmt.Sprintf("computeConsolidation allExistingAreSpot len candidates: %d, new node claims: %d", len(candidates), len(results.NewNodeClaims)))
 		return c.computeSpotToSpotConsolidation(ctx, candidates, results, candidatePrice)
 	}
 
@@ -181,12 +187,14 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 		if len(candidates) == 1 {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Filtering by price: %v", err))...)
 		}
+		log.FromContext(ctx).V(1).Info(fmt.Sprintf("computeConsolidation abandoned, err: %s len candidates: %d, new node claims: %d", err.Error(), len(candidates), len(results.NewNodeClaims)))
 		return Command{}, pscheduling.Results{}, nil
 	}
 	if len(results.NewNodeClaims[0].NodeClaimTemplate.InstanceTypeOptions) == 0 {
 		if len(candidates) == 1 {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, "Can't replace with a cheaper node")...)
 		}
+		log.FromContext(ctx).V(1).Info(fmt.Sprintf("computeConsolidation abandoned, won't replace 1 candidate for less instance type options. len candidates: %d, new node claims: %d", len(candidates), len(results.NewNodeClaims)))
 		return Command{}, pscheduling.Results{}, nil
 	}
 

@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -85,7 +86,7 @@ func NewController(clk clock.Clock, kubeClient client.Client, provisioner *provi
 			// Attempt to identify multiple NodeClaims that we can consolidate simultaneously to reduce pod churn
 			NewMultiNodeConsolidation(c),
 			// And finally fall back our single NodeClaim consolidation to further reduce cluster cost.
-			NewSingleNodeConsolidation(c),
+			//NewSingleNodeConsolidation(c),
 		},
 	}
 }
@@ -130,7 +131,7 @@ func (c *Controller) Reconcile(ctx context.Context) (reconcile.Result, error) {
 		c.recordRun(fmt.Sprintf("%T", m))
 		success, err := c.disrupt(ctx, m)
 		if err != nil {
-			return reconcile.Result{}, fmt.Errorf("disrupting via %q, %w", m.Reason(), err)
+			return reconcile.Result{}, fmt.Errorf("disrupting via reason=%q, %w", strings.ToLower(string(m.Reason())), err)
 		}
 		if success {
 			return reconcile.Result{RequeueAfter: singleton.RequeueImmediately}, nil
@@ -143,7 +144,7 @@ func (c *Controller) Reconcile(ctx context.Context) (reconcile.Result, error) {
 
 func (c *Controller) disrupt(ctx context.Context, disruption Method) (bool, error) {
 	defer metrics.Measure(EvaluationDurationSeconds.With(map[string]string{
-		metrics.ReasonLabel:    string(disruption.Reason()),
+		metrics.ReasonLabel:    strings.ToLower(string(disruption.Reason())),
 		consolidationTypeLabel: disruption.ConsolidationType(),
 	}))()
 	candidates, err := GetCandidates(ctx, c.cluster, c.kubeClient, c.recorder, c.clock, c.cloudProvider, disruption.ShouldDisrupt, disruption.Class(), c.queue)
@@ -151,7 +152,7 @@ func (c *Controller) disrupt(ctx context.Context, disruption Method) (bool, erro
 		return false, fmt.Errorf("determining candidates, %w", err)
 	}
 	EligibleNodes.With(map[string]string{
-		metrics.ReasonLabel: string(disruption.Reason()),
+		metrics.ReasonLabel: strings.ToLower(string(disruption.Reason())),
 	}).Set(float64(len(candidates)))
 
 	// If there are no candidates, move to the next disruption
@@ -184,7 +185,7 @@ func (c *Controller) disrupt(ctx context.Context, disruption Method) (bool, erro
 // 3. Add Command to orchestration.Queue to wait to delete the candiates.
 func (c *Controller) executeCommand(ctx context.Context, m Method, cmd Command, schedulingResults scheduling.Results) error {
 	commandID := uuid.NewUUID()
-	log.FromContext(ctx).WithValues("command-id", commandID).Info(fmt.Sprintf("disrupting via %s %s", m.Reason(), cmd))
+	log.FromContext(ctx).WithValues("command-id", commandID, "reason", strings.ToLower(string(m.Reason()))).Info(fmt.Sprintf("disrupting nodeclaim(s) via %s", cmd))
 
 	stateNodes := lo.Map(cmd.candidates, func(c *Candidate, _ int) *state.StateNode {
 		return c.StateNode
@@ -219,24 +220,41 @@ func (c *Controller) executeCommand(ctx context.Context, m Method, cmd Command, 
 	// We have the new NodeClaims created at the API server so mark the old NodeClaims for deletion
 	c.cluster.MarkForDeletion(providerIDs...)
 
+	// Set the status of the nodeclaims to reflect that they are disruption candidates
+	err = multierr.Combine(lo.Map(cmd.candidates, func(candidate *Candidate, _ int) error {
+		m.Class()
+		candidate.NodeClaim.StatusConditions().SetTrueWithReason(v1.ConditionTypeDisruptionCandidate, v1.ConditionTypeDisruptionCandidate, disruptionReason(m, candidate.NodeClaim))
+		return c.kubeClient.Status().Update(ctx, candidate.NodeClaim)
+	})...)
+	if err != nil {
+		return multierr.Append(fmt.Errorf("updating nodeclaim status: %w", err), state.RequireNoScheduleTaint(ctx, c.kubeClient, false, stateNodes...))
+	}
+
 	if err := c.queue.Add(orchestration.NewCommand(nodeClaimNames,
 		lo.Map(cmd.candidates, func(c *Candidate, _ int) *state.StateNode { return c.StateNode }), commandID, m.Reason(), m.ConsolidationType())); err != nil {
 		c.cluster.UnmarkForDeletion(providerIDs...)
+		err = multierr.Combine(err, multierr.Combine(lo.Map(cmd.candidates, func(candidate *Candidate, _ int) error {
+			return multierr.Append(candidate.NodeClaim.StatusConditions().Clear(v1.ConditionTypeDisruptionCandidate), c.kubeClient.Status().Update(ctx, candidate.NodeClaim))
+		})...))
 		return fmt.Errorf("adding command to queue (command-id: %s), %w", commandID, multierr.Append(err, state.RequireNoScheduleTaint(ctx, c.kubeClient, false, stateNodes...)))
 	}
 
 	// An action is only performed and pods/nodes are only disrupted after a successful add to the queue
 	DecisionsPerformedTotal.With(map[string]string{
 		decisionLabel:          string(cmd.Decision()),
-		metrics.ReasonLabel:    string(m.Reason()),
+		metrics.ReasonLabel:    strings.ToLower(string(m.Reason())),
 		consolidationTypeLabel: m.ConsolidationType(),
 	}).Inc()
 	return nil
 }
 
+func disruptionReason(m Method, nodeClaim *v1.NodeClaim) string {
+	return fmt.Sprintf("node %s/%s was disrupted, reason: %s, consolidationType: %s", nodeClaim.Name, nodeClaim.Status.NodeName, m.Reason(), m.ConsolidationType())
+}
+
 // createReplacementNodeClaims creates replacement NodeClaims
 func (c *Controller) createReplacementNodeClaims(ctx context.Context, m Method, cmd Command) ([]string, error) {
-	nodeClaimNames, err := c.provisioner.CreateNodeClaims(ctx, cmd.replacements, provisioning.WithReason(string(m.Reason())))
+	nodeClaimNames, err := c.provisioner.CreateNodeClaims(ctx, cmd.replacements, provisioning.WithReason(strings.ToLower(string(m.Reason()))))
 	if err != nil {
 		return nil, err
 	}
